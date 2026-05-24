@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>分散式 TSP 路徑優化監控平台</title>
+  <!-- Google Fonts: Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="logo-area">
+        <i class="fa-solid fa-network-wired logo-icon"></i>
+        <div>
+          <h1>分散式 TSP 路徑優化平台</h1>
+          <p class="subtitle">Distributed TSP Optimizer & Node Monitor</p>
+        </div>
+      </div>
+      <div class="system-status-indicator">
+        <span class="status-dot online"></span>
+        <span class="status-text">Master 運作中</span>
+      </div>
+    </header>
+
+    <main class="app-content">
+      <!-- Left side: Form & Queue -->
+      <section class="left-panel">
+        <!-- Task submission -->
+        <div class="card task-creation-card">
+          <div class="card-header">
+            <i class="fa-solid fa-plus-circle header-icon"></i>
+            <h2>建立 TSP 求解任務</h2>
+          </div>
+          <div class="card-body">
+            <div class="form-group">
+              <label for="task-name">任務名稱</label>
+              <input type="text" id="task-name" placeholder="請輸入任務名稱（例如：台北配送路徑）">
+            </div>
+
+            <div class="control-actions">
+              <div class="random-generator">
+                <label for="random-points-count">隨機點位數量</label>
+                <div class="input-with-button">
+                  <input type="number" id="random-points-count" min="3" max="15" value="10">
+                  <button id="btn-generate-random" class="btn btn-secondary">
+                    <i class="fa-solid fa-shuffle"></i> 產生隨機點
+                  </button>
+                </div>
+              </div>
+
+              <div class="canvas-instruction">
+                <i class="fa-solid fa-info-circle"></i> 提示：第一個點位為固定起點，最後一個點位為固定終點。您也可以直接在畫布上點擊滑鼠手動新增座標點位。
+              </div>
+
+              <div class="button-row">
+                <button id="btn-clear-points" class="btn btn-danger">
+                  <i class="fa-solid fa-trash-can"></i> 清除點位 (<span id="selected-points-count">0</span>)
+                </button>
+                <button id="btn-submit-task" class="btn btn-primary">
+                  <i class="fa-solid fa-paper-plane"></i> 提交任務
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Task Queue -->
+        <div class="card task-list-card">
+          <div class="card-header">
+            <i class="fa-solid fa-list-check header-icon"></i>
+            <h2>任務佇列與狀態</h2>
+          </div>
+          <div class="card-body scrollable-body">
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>任務名稱</th>
+                    <th>節點數</th>
+                    <th>負責節點</th>
+                    <th>狀態</th>
+                    <th>結果/耗時</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="task-table-body">
+                  <tr>
+                    <td colspan="6" class="empty-message">載入中...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right side: Canvas & Monitor -->
+      <section class="right-panel">
+        <!-- Interactive Canvas -->
+        <div class="card canvas-card">
+          <div class="card-header">
+            <i class="fa-solid fa-map-location-dot header-icon"></i>
+            <h2>路徑可視化地圖 (<span id="canvas-mode-badge">編輯模式</span>)</h2>
+            <div class="canvas-actions">
+              <button id="btn-reset-view" class="btn btn-small" title="重設畫布檢視">
+                <i class="fa-solid fa-arrows-to-eye"></i>
+              </button>
+            </div>
+          </div>
+          <div class="card-body canvas-container">
+            <canvas id="tsp-canvas" width="600" height="400"></canvas>
+            <div id="canvas-overlay-details" class="canvas-overlay hidden">
+              <div class="overlay-title" id="overlay-task-name">-</div>
+              <div class="overlay-stat"><span class="lbl">路徑長度:</span> <span id="overlay-distance" class="val">-</span></div>
+              <div class="overlay-stat"><span class="lbl">運算耗時:</span> <span id="overlay-time" class="val">-</span></div>
+            </div>
+          </div>
+          <!-- DP Player Control Panel -->
+          <div id="dp-player-panel" class="dp-player-panel hidden">
+            <div class="dp-player-controls">
+              <div class="dp-selector-group">
+                <label for="select-worker-dp"><i class="fa-solid fa-server"></i> 節點歷程</label>
+                <select id="select-worker-dp" class="dp-select">
+                  <option value="">-- 選擇 Worker --</option>
+                </select>
+              </div>
+              <div class="dp-btn-group">
+                <button id="btn-play-dp" class="btn-player" title="播放/暫停"><i class="fa-solid fa-play"></i></button>
+                <button id="btn-stop-dp" class="btn-player" title="重設步驟"><i class="fa-solid fa-rotate-left"></i></button>
+              </div>
+              <div class="dp-slider-group">
+                <input type="range" id="slider-dp-step" min="1" max="1" value="1" class="dp-slider">
+                <span id="dp-step-info" class="dp-step-info">步驟: 0/0 (長度: -)</span>
+              </div>
+            </div>
+            
+            <!-- Subtask Comparison Section -->
+            <div class="comparison-section">
+              <div class="comparison-header-row" id="comparison-toggle-btn">
+                <span><i class="fa-solid fa-code-compare"></i> 各 Worker 子任務成果比較表 (Subtasks Comparison)</span>
+                <span id="comparison-toggle-text" class="comparison-toggle-arrow"><i class="fa-solid fa-chevron-up"></i> 收合</span>
+              </div>
+              <div id="comparison-scroll-container" class="comparison-scroll-container">
+                <table class="comparison-table">
+                  <thead>
+                    <tr>
+                      <th>起步路線</th>
+                      <th>負責 Worker</th>
+                      <th>局部最優路徑 (Tour)</th>
+                      <th>路徑長度 (Distance)</th>
+                      <th>耗時 (Time)</th>
+                      <th>狀態</th>
+                    </tr>
+                  </thead>
+                  <tbody id="comparison-table-body">
+                    <tr>
+                      <td colspan="6" class="empty-message">載入中...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- DP Matrix Table View -->
+            <div class="dp-table-section">
+              <div class="dp-table-header-row" id="dp-table-toggle-btn">
+                <span><i class="fa-solid fa-table-cells"></i> 動態規劃狀態表 (DP Table: g(S, v))</span>
+                <span id="dp-toggle-text" class="dp-toggle-arrow"><i class="fa-solid fa-chevron-up"></i> 收合</span>
+              </div>
+              <div id="dp-table-scroll-container" class="dp-table-scroll-container">
+                <table class="dp-table">
+                  <thead>
+                    <tr>
+                      <th>步驟 (子集大小)</th>
+                      <th>子集 S (中途節點)</th>
+                      <th>結尾 v</th>
+                      <th>最小距離 g(S, v)</th>
+                      <th>前驅節點 (Parent)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dp-table-body">
+                    <tr>
+                      <td colspan="5" class="empty-message">請選擇 Worker 歷程以查看填表狀態</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Node telemetry -->
+        <div class="card monitor-card">
+          <div class="card-header">
+            <i class="fa-solid fa-chart-line header-icon"></i>
+            <h2>節點運作與資源狀態監控 (每 3 秒更新)</h2>
+          </div>
+          <div class="card-body">
+            <div class="monitor-grid" id="monitor-grid">
+              <!-- Master Card -->
+              <div class="node-card" id="node-Master">
+                <div class="node-header">
+                  <div class="node-info">
+                    <span class="node-dot online"></span>
+                    <h3>Master Node</h3>
+                  </div>
+                  <span class="node-badge-role master">WEB & DISPATCH</span>
+                </div>
+                <div class="node-metrics">
+                  <div class="metric">
+                    <div class="metric-info">
+                      <span>CPU 使用率</span>
+                      <span class="metric-val" id="cpu-Master">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" id="cpu-bar-Master" style="width: 0%"></div>
+                    </div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-info">
+                      <span>記憶體使用率</span>
+                      <span class="metric-val" id="mem-Master">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" id="mem-bar-Master" style="width: 0%"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Worker A Card -->
+              <div class="node-card offline-node" id="node-Worker-A">
+                <div class="node-header">
+                  <div class="node-info">
+                    <span class="node-dot offline"></span>
+                    <h3>Worker A</h3>
+                  </div>
+                  <span class="node-badge-role worker">SOLVER</span>
+                </div>
+                <div class="node-metrics">
+                  <div class="metric">
+                    <div class="metric-info">
+                      <span>CPU 使用率</span>
+                      <span class="metric-val" id="cpu-Worker-A">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" id="cpu-bar-Worker-A" style="width: 0%"></div>
+                    </div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-info">
+                      <span>記憶體使用率</span>
+                      <span class="metric-val" id="mem-Worker-A">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" id="mem-bar-Worker-A" style="width: 0%"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="node-footer">
+                  <span class="status-msg">已斷線</span>
+                </div>
+              </div>
+
+              <!-- Worker B Card -->
+              <div class="node-card offline-node" id="node-Worker-B">
+                <div class="node-header">
+                  <div class="node-info">
+                    <span class="node-dot offline"></span>
+                    <h3>Worker B</h3>
+                  </div>
+                  <span class="node-badge-role worker">SOLVER</span>
+                </div>
+                <div class="node-metrics">
+                  <div class="metric">
+                    <div class="metric-info">
+                      <span>CPU 使用率</span>
+                      <span class="metric-val" id="cpu-Worker-B">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" id="cpu-bar-Worker-B" style="width: 0%"></div>
+                    </div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-info">
+                      <span>記憶體使用率</span>
+                      <span class="metric-val" id="mem-Worker-B">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" id="mem-bar-Worker-B" style="width: 0%"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="node-footer">
+                  <span class="status-msg">已斷線</span>
+                </div>
+              </div>
+
+              <!-- Worker C Card -->
+              <div class="node-card offline-node" id="node-Worker-C">
+                <div class="node-header">
+                  <div class="node-info">
+                    <span class="node-dot offline"></span>
+                    <h3>Worker C</h3>
+                  </div>
+                  <span class="node-badge-role worker">SOLVER</span>
+                </div>
+                <div class="node-metrics">
+                  <div class="metric">
+                    <div class="metric-info">
+                      <span>CPU 使用率</span>
+                      <span class="metric-val" id="cpu-Worker-C">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" id="cpu-bar-Worker-C" style="width: 0%"></div>
+                    </div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-info">
+                      <span>記憶體使用率</span>
+                      <span class="metric-val" id="mem-Worker-C">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                      <div class="progress-bar-fill" id="mem-bar-Worker-C" style="width: 0%"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="node-footer">
+                  <span class="status-msg">已斷線</span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

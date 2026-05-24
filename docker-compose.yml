@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  master:
+    build:
+      context: ./master
+      dockerfile: Dockerfile
+    container_name: tsp-master
+    ports:
+      - "3000:3000"
+    networks:
+      - tsp-net
+    restart: always
+
+  worker-a:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: tsp-worker-a
+    ports:
+      - "4001:4000"
+    environment:
+      - WORKER_ID=Worker A
+      - PORT=4000
+      - MASTER_URL=http://master:3000
+    networks:
+      - tsp-net
+    restart: always
+
+  worker-b:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: tsp-worker-b
+    ports:
+      - "4002:4000"
+    environment:
+      - WORKER_ID=Worker B
+      - PORT=4000
+      - MASTER_URL=http://master:3000
+    networks:
+      - tsp-net
+    restart: always
+
+  worker-c:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: tsp-worker-c
+    ports:
+      - "4003:4000"
+    environment:
+      - WORKER_ID=Worker C
+      - PORT=4000
+      - MASTER_URL=http://master:3000
+    networks:
+      - tsp-net
+    restart: always
+
+networks:
+  tsp-net:
+    driver: bridge
