@@ -6,39 +6,11 @@ def distance(p1, p2):
     """Calculate Euclidean distance between two points."""
     return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
 
-def backtrack_partial_path(dp, mask, end_node):
-    path = [end_node]
-    curr_mask = mask
-    curr_node = end_node
-    while curr_node != 0:
-        parent = dp[(curr_mask, curr_node)][1]
-        path.append(parent)
-        curr_mask = curr_mask ^ (1 << (curr_node - 1))
-        curr_node = parent
-    return list(reversed(path))
-
-def extract_dp_table_for_size(dp, s, intermediate_nodes):
-    table = []
-    for (mask, v), (d, parent) in dp.items():
-        if bin(mask).count('1') == s:
-            subset = []
-            for node_idx in intermediate_nodes:
-                if mask & (1 << (node_idx - 1)):
-                    subset.append(node_idx + 1)
-            table.append({
-                "subset": sorted(subset),
-                "last": v + 1,
-                "dist": round(d, 2) if d != float('inf') else None,
-                "parent": parent + 1 if parent != 0 else 1
-            })
-    table.sort(key=lambda x: (x["subset"], x["last"]))
-    return table
-
 def solve_tsp(coords, first_step=None):
     """
     Solve open TSP from start (0) to end (n-1) visiting intermediate nodes.
     If first_step is specified, the path must start 0 -> first_step -> ...
-    Uses Held-Karp Dynamic Programming algorithm.
+    Uses Genetic Algorithm.
     """
     start_time = time.time()
     n = len(coords)
@@ -55,144 +27,122 @@ def solve_tsp(coords, first_step=None):
                 "step": 1, 
                 "path": tour, 
                 "distance": round(dist, 2),
-                "table": [{
-                    "subset": [],
-                    "last": 2,
-                    "dist": round(dist, 2),
-                    "parent": 1
-                }]
+                "table": []
             }]
         }
 
-    intermediate_nodes = list(range(1, n - 1))
-    m = len(intermediate_nodes)
+    # Determine fixed prefix and variable nodes
+    fixed_prefix = []
+    if first_step is not None:
+        fixed_prefix = [first_step]
+        variable_nodes = [node for node in range(1, n - 1) if node != first_step]
+    else:
+        variable_nodes = list(range(1, n - 1))
 
-    # DP table: dp[(subset_mask, last_node)] = (min_distance, parent_node)
-    dp = {}
+    # Helper function to compute path distance
+    def get_path_dist(var_path):
+        full_path = [0] + fixed_prefix + var_path + [n - 1]
+        d = 0.0
+        for i in range(len(full_path) - 1):
+            d += distance(coords[full_path[i]], coords[full_path[i+1]])
+        return d
+
+    # If 0 or 1 variable nodes, the path is trivial and unique
+    if len(variable_nodes) <= 1:
+        best_var = list(variable_nodes)
+        best_dist = get_path_dist(best_var)
+        tour = [0] + fixed_prefix + best_var + [n - 1]
+        duration_ms = int((time.time() - start_time) * 1000)
+        return {
+            "tour": tour,
+            "distance": round(best_dist, 2),
+            "time": max(1, duration_ms),
+            "dp_steps": [{
+                "step": 1,
+                "path": tour,
+                "distance": round(best_dist, 2),
+                "table": []
+            }]
+        }
+
+    # Genetic Algorithm Parameters
+    pop_size = 50
+    generations = 60
+    mutation_rate = 0.15
+    elites_count = max(2, int(pop_size * 0.1))
+
+    # Initialize population
+    import random
+    population = []
+    for _ in range(pop_size):
+        ind = list(variable_nodes)
+        random.shuffle(ind)
+        population.append(ind)
+
+    best_global_var = None
+    best_global_dist = float('inf')
     dp_steps = []
 
-    # Initialize DP table
-    if first_step is not None:
-        mask = 1 << (first_step - 1)
-        dp[(mask, first_step)] = (distance(coords[0], coords[first_step]), 0)
-    else:
-        for u in intermediate_nodes:
-            mask = 1 << (u - 1)
-            dp[(mask, u)] = (distance(coords[0], coords[u]), 0)
-
-    # Record step 1
-    best_dist_1 = float('inf')
-    best_key_1 = None
-    for (mask, u), (d, parent) in dp.items():
-        if bin(mask).count('1') == 1:
-            if d < best_dist_1:
-                best_dist_1 = d
-                best_key_1 = (mask, u)
-    if best_key_1:
-        mask, u = best_key_1
-        dp_steps.append({
-            "step": 1,
-            "path": backtrack_partial_path(dp, mask, u),
-            "distance": round(best_dist_1, 2),
-            "table": extract_dp_table_for_size(dp, 1, intermediate_nodes)
-        })
-
-    # Iterate subset sizes from 2 to m
-    import itertools
-    for s in range(2, m + 1):
-        for comb in itertools.combinations(intermediate_nodes, s):
-            if first_step is not None and first_step not in comb:
-                continue
-
-            mask = 0
-            for u in comb:
-                mask |= 1 << (u - 1)
-
-            for v in comb:
-                if first_step is not None and v == first_step:
-                    continue
-
-                prev_mask = mask ^ (1 << (v - 1))
-                best_dist = float('inf')
-                best_parent = -1
-
-                for u in comb:
-                    if u == v:
-                        continue
-                    if (prev_mask, u) in dp:
-                        d = dp[(prev_mask, u)][0] + distance(coords[u], coords[v])
-                        if d < best_dist:
-                            best_dist = d
-                            best_parent = u
-
-                if best_dist != float('inf'):
-                    dp[(mask, v)] = (best_dist, best_parent)
-
-        # Record step s after completing size s
-        best_s_dist = float('inf')
-        best_s_key = None
-        for (mask, v), (d, parent) in dp.items():
-            if bin(mask).count('1') == s:
-                if d < best_s_dist:
-                    best_s_dist = d
-                    best_s_key = (mask, v)
-        if best_s_key:
-            mask, v = best_s_key
-            dp_steps.append({
-                "step": s,
-                "path": backtrack_partial_path(dp, mask, v),
-                "distance": round(best_s_dist, 2),
-                "table": extract_dp_table_for_size(dp, s, intermediate_nodes)
-            })
-
-    # Connect to the final destination n-1
-    full_mask = (1 << m) - 1
-    best_dist = float('inf')
-    last_node = -1
-
-    for u in intermediate_nodes:
-        if (full_mask, u) in dp:
-            d = dp[(full_mask, u)][0] + distance(coords[u], coords[n - 1])
-            if d < best_dist:
-                best_dist = d
-                last_node = u
-
-    # Reconstruct path
-    if last_node == -1:
-        tour = list(range(n))
-        best_dist = 0.0
-    else:
-        path = [n - 1]
-        curr_mask = full_mask
-        curr_node = last_node
-
-        while curr_node != 0:
-            path.append(curr_node)
-            parent = dp[(curr_mask, curr_node)][1]
-            curr_mask = curr_mask ^ (1 << (curr_node - 1))
-            curr_node = parent
-
-        path.append(0)
-        tour = list(reversed(path))
+    # Evolutionary loop
+    for gen in range(1, generations + 1):
+        # Calculate fitness
+        scored_pop = []
+        for ind in population:
+            d = get_path_dist(ind)
+            scored_pop.append((d, ind))
         
-        # Append final complete path (step m + 1)
-        final_table = [{
-            "subset": [node_idx + 1 for node_idx in intermediate_nodes],
-            "last": n,
-            "dist": round(best_dist, 2) if best_dist != float('inf') else None,
-            "parent": last_node + 1
-        }]
+        scored_pop.sort(key=lambda x: x[0])
+        current_best_dist, current_best_var = scored_pop[0]
+
+        if current_best_dist < best_global_dist:
+            best_global_dist = current_best_dist
+            best_global_var = list(current_best_var)
+
+        # Record this generation's step (map to dp_steps for UI playback compatibility)
+        best_full_path = [0] + fixed_prefix + best_global_var + [n - 1]
         dp_steps.append({
-            "step": m + 1,
-            "path": tour,
-            "distance": round(best_dist, 2),
-            "table": final_table
+            "step": gen,
+            "path": best_full_path,
+            "distance": round(best_global_dist, 2),
+            "table": []
         })
 
+        # Selection, Crossover, and Mutation to produce next generation
+        new_pop = [x[1] for x in scored_pop[:elites_count]]  # Keep elites
+
+        while len(new_pop) < pop_size:
+            # Tournament selection (size 3)
+            p1 = min(random.sample(population, 3), key=get_path_dist)
+            p2 = min(random.sample(population, 3), key=get_path_dist)
+
+            # Crossover: Ordered Crossover (OX)
+            size = len(p1)
+            start, end = sorted(random.sample(range(size), 2))
+            child = [None] * size
+            child[start:end] = p1[start:end]
+            
+            p2_idx = 0
+            for c_idx in range(size):
+                if child[c_idx] is None:
+                    while p2[p2_idx] in child:
+                        p2_idx += 1
+                    child[c_idx] = p2[p2_idx]
+            
+            # Mutation: Swap Mutation
+            if random.random() < mutation_rate:
+                idx1, idx2 = random.sample(range(size), 2)
+                child[idx1], child[idx2] = child[idx2], child[idx1]
+
+            new_pop.append(child)
+
+        population = new_pop
+
+    tour = [0] + fixed_prefix + best_global_var + [n - 1]
     duration_ms = int((time.time() - start_time) * 1000)
+
     return {
         "tour": tour,
-        "distance": round(best_dist, 2),
+        "distance": round(best_global_dist, 2),
         "time": max(1, duration_ms),
         "dp_steps": dp_steps
     }
@@ -202,7 +152,7 @@ def solve_task_process(task_id, coords, master_url, worker_id, first_step=None):
     Subprocess worker target. Solves TSP and reports results to Master callback.
     """
     try:
-        print(f"[{worker_id}] (Process) Starting DP computation for task {task_id} (first_step={first_step})...")
+        print(f"[{worker_id}] (Process) Starting GA computation for task {task_id} (first_step={first_step})...")
         result = solve_tsp(coords, first_step=first_step)
         
         # Report completion

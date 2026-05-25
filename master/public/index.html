@@ -123,23 +123,6 @@
           </div>
           <!-- DP Player Control Panel -->
           <div id="dp-player-panel" class="dp-player-panel hidden">
-            <div class="dp-player-controls">
-              <div class="dp-selector-group">
-                <label for="select-worker-dp"><i class="fa-solid fa-server"></i> 節點歷程</label>
-                <select id="select-worker-dp" class="dp-select">
-                  <option value="">-- 選擇 Worker --</option>
-                </select>
-              </div>
-              <div class="dp-btn-group">
-                <button id="btn-play-dp" class="btn-player" title="播放/暫停"><i class="fa-solid fa-play"></i></button>
-                <button id="btn-stop-dp" class="btn-player" title="重設步驟"><i class="fa-solid fa-rotate-left"></i></button>
-              </div>
-              <div class="dp-slider-group">
-                <input type="range" id="slider-dp-step" min="1" max="1" value="1" class="dp-slider">
-                <span id="dp-step-info" class="dp-step-info">步驟: 0/0 (長度: -)</span>
-              </div>
-            </div>
-            
             <!-- Subtask Comparison Section -->
             <div class="comparison-section">
               <div class="comparison-header-row" id="comparison-toggle-btn">
@@ -161,32 +144,6 @@
                   <tbody id="comparison-table-body">
                     <tr>
                       <td colspan="6" class="empty-message">載入中...</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <!-- DP Matrix Table View -->
-            <div class="dp-table-section">
-              <div class="dp-table-header-row" id="dp-table-toggle-btn">
-                <span><i class="fa-solid fa-table-cells"></i> 動態規劃狀態表 (DP Table: g(S, v))</span>
-                <span id="dp-toggle-text" class="dp-toggle-arrow"><i class="fa-solid fa-chevron-up"></i> 收合</span>
-              </div>
-              <div id="dp-table-scroll-container" class="dp-table-scroll-container">
-                <table class="dp-table">
-                  <thead>
-                    <tr>
-                      <th>步驟 (子集大小)</th>
-                      <th>子集 S (中途節點)</th>
-                      <th>結尾 v</th>
-                      <th>最小距離 g(S, v)</th>
-                      <th>前驅節點 (Parent)</th>
-                    </tr>
-                  </thead>
-                  <tbody id="dp-table-body">
-                    <tr>
-                      <td colspan="5" class="empty-message">請選擇 Worker 歷程以查看填表狀態</td>
                     </tr>
                   </tbody>
                 </table>

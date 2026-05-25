@@ -5,11 +5,6 @@ let currentSelectedTaskId = null;
 let monitorIntervalId = null;
 let tasksIntervalId = null;
 
-// DP Playback state variables
-let dpPlaybackWorkerId = "";
-let dpPlaybackStep = 1;
-let dpPlaybackInterval = null;
-let dpPlaybackIsPlaying = false;
 
 // DOM Elements
 const canvas = document.getElementById('tsp-canvas');
@@ -42,12 +37,7 @@ window.addEventListener('DOMContentLoaded', () => {
   btnSubmitTask.addEventListener('click', handleSubmitTask);
   btnResetView.addEventListener('click', resetToEditMode);
   
-  // Setup DP Playback Event Listeners
-  document.getElementById('select-worker-dp').addEventListener('change', handleDpWorkerChange);
-  document.getElementById('btn-play-dp').addEventListener('click', toggleDpPlay);
-  document.getElementById('btn-stop-dp').addEventListener('click', stopDpPlayback);
-  document.getElementById('slider-dp-step').addEventListener('input', handleDpSliderInput);
-  document.getElementById('dp-table-toggle-btn').addEventListener('click', toggleDpTableCollapse);
+  // Setup Comparison Toggle Event Listener
   document.getElementById('comparison-toggle-btn').addEventListener('click', toggleComparisonCollapse);
 
   // Initial loads and start polling
@@ -89,9 +79,6 @@ function drawCanvas() {
   let pathIndices = [];
   let pathStatus = 'edit'; // 'edit', 'queued', 'running', 'completed', 'failed'
   let taskName = '';
-  let isPlaybackMode = false;
-  let playbackPathIndices = [];
-  let currentStepData = null;
 
   if (currentSelectedTaskId) {
     const selectedTask = tasks.find(t => t.id === currentSelectedTaskId);
@@ -103,42 +90,13 @@ function drawCanvas() {
       if (selectedTask.status === 'completed' && selectedTask.result && selectedTask.result.tour) {
         pathIndices = selectedTask.result.tour;
       }
-      
-      // Determine if we are in DP Playback mode
-      if (dpPlaybackWorkerId && selectedTask.subtasks) {
-        const sub = selectedTask.subtasks.find(s => s.id === dpPlaybackWorkerId);
-        if (sub && sub.result && sub.result.dp_steps) {
-          isPlaybackMode = true;
-          const stepData = sub.result.dp_steps[dpPlaybackStep - 1];
-          if (stepData) {
-            playbackPathIndices = stepData.path;
-            currentStepData = stepData;
-          }
-        }
-      }
     }
   } else {
     pointsToDraw = selectedPoints;
   }
 
   // 4. Draw Path Connections
-  if (isPlaybackMode && playbackPathIndices.length > 0) {
-    // Draw DP playback partial path (amber glowing path)
-    ctx.beginPath();
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = '#f59e0b'; // Amber
-    ctx.shadowColor = 'rgba(245, 158, 11, 0.4)';
-    ctx.shadowBlur = 8;
-    
-    const startPt = pointsToDraw[playbackPathIndices[0]];
-    ctx.moveTo(startPt[0], startPt[1]);
-    for (let i = 1; i < playbackPathIndices.length; i++) {
-      const pt = pointsToDraw[playbackPathIndices[i]];
-      ctx.lineTo(pt[0], pt[1]);
-    }
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-  } else if (pointsToDraw.length >= 2) {
+  if (pointsToDraw.length >= 2) {
     ctx.beginPath();
     ctx.lineWidth = 2.5;
 
@@ -193,15 +151,7 @@ function drawCanvas() {
     let pointColor = '#3b82f6'; // Blue for Edit
     let haloColor = 'rgba(59, 130, 246, 0.3)';
 
-    if (isPlaybackMode) {
-      if (playbackPathIndices.includes(index)) {
-        pointColor = '#f59e0b'; // Amber for visited
-        haloColor = 'rgba(245, 158, 11, 0.3)';
-      } else {
-        pointColor = '#475569'; // Muted slate gray for unvisited
-        haloColor = 'rgba(71, 85, 105, 0.15)';
-      }
-    } else if (pathStatus === 'completed') {
+    if (pathStatus === 'completed') {
       pointColor = '#10b981'; // Emerald
       haloColor = 'rgba(16, 185, 129, 0.3)';
     } else if (pathStatus === 'running') {
@@ -257,19 +207,6 @@ function drawCanvas() {
     ctx.textAlign = 'center';
     ctx.fillText(index + 1, x, y - 14);
   });
-
-  // 6. Update DP Table Display
-  if (isPlaybackMode && dpPlaybackWorkerId) {
-    const selectedTask = tasks.find(t => t.id === currentSelectedTaskId);
-    if (selectedTask && selectedTask.subtasks) {
-      const sub = selectedTask.subtasks.find(s => s.id === dpPlaybackWorkerId);
-      if (sub) {
-        updateDpTableHighlight(sub, dpPlaybackStep);
-      }
-    }
-  } else {
-    clearDpTableHighlights();
-  }
 }
 
 // Handle clicking on the canvas to add custom points
@@ -380,16 +317,9 @@ function resetToEditMode() {
   canvasModeBadge.parentNode.parentNode.classList.remove('viewing');
   canvasOverlay.classList.add('hidden');
   
-  // Reset DP player state
-  stopDpPlayback();
-  dpPlaybackWorkerId = "";
-  const select = document.getElementById('select-worker-dp');
-  if (select) select.value = "";
   const panel = document.getElementById('dp-player-panel');
   if (panel) panel.classList.add('hidden');
   
-  // Clear tables
-  renderCompleteDpTable(null);
   const compBody = document.getElementById('comparison-table-body');
   if (compBody) {
     compBody.innerHTML = `
@@ -421,7 +351,7 @@ function fetchTasks() {
           updateCanvasOverlay(task);
           const panel = document.getElementById('dp-player-panel');
           if (task.status === 'completed' && panel && panel.classList.contains('hidden')) {
-            setupDpPlayerUI(task);
+            setupComparisonPanel(task);
           }
         } else {
           resetToEditMode();
@@ -499,7 +429,7 @@ function selectTask(taskId) {
   if (task) {
     canvasModeBadge.textContent = `檢視模式: ${task.name}`;
     updateCanvasOverlay(task);
-    setupDpPlayerUI(task);
+    setupComparisonPanel(task);
   }
   drawCanvas();
   renderTaskTable();
@@ -640,307 +570,18 @@ function getMetricFillClass(val) {
   return 'fill-high';                  // Red
 }
 
-// DP Player Control Functions
-  function setupDpPlayerUI(task) {
-    const panel = document.getElementById('dp-player-panel');
-    const select = document.getElementById('select-worker-dp');
-    
-    // Stop current playback if any
-    stopDpPlayback();
-    
-    if (task.status === 'completed' && task.subtasks && task.subtasks.length > 0) {
-      // Check if at least one subtask has dp_steps
-      const hasDpSteps = task.subtasks.some(sub => sub.result && sub.result.dp_steps && sub.result.dp_steps.length > 0);
-      
-      if (hasDpSteps) {
-        // Clear existing options, keep the default one
-        select.innerHTML = '<option value="">-- 選擇 Worker 歷程 --</option>';
-        
-        // Populate completed subtasks
-        task.subtasks.forEach(sub => {
-          if (sub.result && sub.result.dp_steps && sub.result.dp_steps.length > 0) {
-            const opt = document.createElement('option');
-            opt.value = sub.id;
-            if (sub.first_step !== null && sub.first_step !== undefined) {
-              opt.textContent = `${sub.workerId || 'Worker'} (第一步: 節點 1 ➔ 節點 ${sub.first_step + 1})`;
-            } else {
-              opt.textContent = `${sub.workerId || 'Worker'} (完整路徑)`;
-            }
-            select.appendChild(opt);
-          }
-        });
-        
-        // Populate the Subtasks Comparison Table
-        updateComparisonTable(task);
-        
-        panel.classList.remove('hidden');
-        return;
-      }
-    }
-    
-    // Default: hide panel
-    panel.classList.add('hidden');
-  }
+// Comparison Panel Control Functions
+function setupComparisonPanel(task) {
+  const panel = document.getElementById('dp-player-panel');
+  if (!panel) return;
 
-function handleDpWorkerChange(e) {
-  const subtaskId = e.target.value;
-  stopDpPlayback(); // Stop any existing playback/interval when worker changes
-  
-  dpPlaybackWorkerId = subtaskId;
-  dpPlaybackStep = 1;
-  
-  // Highlight active row in the comparison table
-  highlightComparisonActiveRow(subtaskId);
-  
-  if (!dpPlaybackWorkerId) {
-    // If no worker selected, redraw to show original full tour
-    renderCompleteDpTable(null);
-    drawCanvas();
-    updateDpStepInfo(0, 0, null);
+  if (task.status === 'completed' && task.subtasks && task.subtasks.length > 0) {
+    updateComparisonTable(task);
+    panel.classList.remove('hidden');
     return;
   }
   
-  // Find subtask and update slider limits
-  const task = tasks.find(t => t.id === currentSelectedTaskId);
-  if (task && task.subtasks) {
-    const sub = task.subtasks.find(s => s.id === dpPlaybackWorkerId);
-    if (sub && sub.result && sub.result.dp_steps) {
-      // Render complete DP table once
-      renderCompleteDpTable(sub);
-      
-      const stepsCount = sub.result.dp_steps.length;
-      const slider = document.getElementById('slider-dp-step');
-      slider.min = 1;
-      slider.max = stepsCount;
-      slider.value = 1;
-      
-      // Update step info text
-      const stepData = sub.result.dp_steps[0];
-      updateDpStepInfo(1, stepsCount, stepData ? stepData.distance : null);
-    }
-  }
-  
-  drawCanvas();
-}
-
-function toggleDpPlay() {
-  if (!dpPlaybackWorkerId) {
-    alert('請先選擇一個 Worker 歷程！');
-    return;
-  }
-  
-  const playBtn = document.getElementById('btn-play-dp');
-  
-  if (dpPlaybackIsPlaying) {
-    // Pause
-    clearInterval(dpPlaybackInterval);
-    dpPlaybackInterval = null;
-    dpPlaybackIsPlaying = false;
-    playBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
-  } else {
-    // Play
-    const task = tasks.find(t => t.id === currentSelectedTaskId);
-    if (!task || !task.subtasks) return;
-    const sub = task.subtasks.find(s => s.id === dpPlaybackWorkerId);
-    if (!sub || !sub.result || !sub.result.dp_steps) return;
-    
-    const stepsCount = sub.result.dp_steps.length;
-    dpPlaybackIsPlaying = true;
-    playBtn.innerHTML = '<i class="fa-solid fa-pause"></i>';
-    
-    // If we were at the end, start back from step 1
-    if (dpPlaybackStep >= stepsCount) {
-      dpPlaybackStep = 1;
-      const slider = document.getElementById('slider-dp-step');
-      slider.value = 1;
-      const stepData = sub.result.dp_steps[0];
-      updateDpStepInfo(1, stepsCount, stepData ? stepData.distance : null);
-      drawCanvas();
-    }
-    
-    dpPlaybackInterval = setInterval(() => {
-      dpPlaybackStep++;
-      if (dpPlaybackStep > stepsCount) {
-        // Finished playing, stop and reset button
-        clearInterval(dpPlaybackInterval);
-        dpPlaybackInterval = null;
-        dpPlaybackIsPlaying = false;
-        playBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
-        dpPlaybackStep = stepsCount; // Stay on last step
-        return;
-      }
-      
-      const slider = document.getElementById('slider-dp-step');
-      slider.value = dpPlaybackStep;
-      const stepData = sub.result.dp_steps[dpPlaybackStep - 1];
-      updateDpStepInfo(dpPlaybackStep, stepsCount, stepData ? stepData.distance : null);
-      drawCanvas();
-    }, 1000); // 1 step per second
-  }
-}
-
-function stopDpPlayback() {
-  if (dpPlaybackInterval) {
-    clearInterval(dpPlaybackInterval);
-    dpPlaybackInterval = null;
-  }
-  dpPlaybackIsPlaying = false;
-  
-  const playBtn = document.getElementById('btn-play-dp');
-  if (playBtn) {
-    playBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
-  }
-  
-  dpPlaybackStep = 1;
-  const slider = document.getElementById('slider-dp-step');
-  if (slider) {
-    slider.value = 1;
-  }
-  
-  if (dpPlaybackWorkerId) {
-    const task = tasks.find(t => t.id === currentSelectedTaskId);
-    if (task && task.subtasks) {
-      const sub = task.subtasks.find(s => s.id === dpPlaybackWorkerId);
-      if (sub && sub.result && sub.result.dp_steps) {
-        const stepsCount = sub.result.dp_steps.length;
-        const stepData = sub.result.dp_steps[0];
-        updateDpStepInfo(1, stepsCount, stepData ? stepData.distance : null);
-      }
-    }
-  } else {
-    updateDpStepInfo(0, 0, null);
-  }
-  
-  drawCanvas();
-}
-
-function handleDpSliderInput(e) {
-  const stepVal = parseInt(e.target.value) || 1;
-  dpPlaybackStep = stepVal;
-  
-  const task = tasks.find(t => t.id === currentSelectedTaskId);
-  if (task && task.subtasks && dpPlaybackWorkerId) {
-    const sub = task.subtasks.find(s => s.id === dpPlaybackWorkerId);
-    if (sub && sub.result && sub.result.dp_steps) {
-      const stepsCount = sub.result.dp_steps.length;
-      const stepData = sub.result.dp_steps[dpPlaybackStep - 1];
-      updateDpStepInfo(dpPlaybackStep, stepsCount, stepData ? stepData.distance : null);
-    }
-  }
-  
-  drawCanvas();
-}
-
-function updateDpStepInfo(currentStep, totalSteps, distance) {
-  const infoSpan = document.getElementById('dp-step-info');
-  if (!infoSpan) return;
-  if (currentStep === 0) {
-    infoSpan.textContent = '步驟: 0/0 (長度: -)';
-  } else {
-    const distText = distance !== null && distance !== undefined ? distance : '-';
-    infoSpan.textContent = `步驟: ${currentStep}/${totalSteps} (長度: ${distText})`;
-  }
-}
-
-function toggleDpTableCollapse() {
-  const container = document.getElementById('dp-table-scroll-container');
-  const toggleText = document.getElementById('dp-toggle-text');
-  if (!container || !toggleText) return;
-  
-  if (container.classList.contains('collapsed')) {
-    container.classList.remove('collapsed');
-    toggleText.innerHTML = '<i class="fa-solid fa-chevron-up"></i> 收合';
-  } else {
-    container.classList.add('collapsed');
-    toggleText.innerHTML = '<i class="fa-solid fa-chevron-down"></i> 展開';
-  }
-}
-
-function renderCompleteDpTable(subtask) {
-  const tbody = document.getElementById('dp-table-body');
-  if (!tbody) return;
-  
-  if (!subtask || !subtask.result || !subtask.result.dp_steps || subtask.result.dp_steps.length === 0) {
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="5" class="empty-message">請選擇 Worker 歷程以查看填表狀態</td>
-      </tr>
-    `;
-    return;
-  }
-  
-  let html = '';
-  subtask.result.dp_steps.forEach(stepData => {
-    const s = stepData.step;
-    if (stepData.table && stepData.table.length > 0) {
-      stepData.table.forEach(row => {
-        const subsetStr = `{${row.subset.join(', ')}}`;
-        const distDisplay = row.dist !== null ? row.dist : '∞';
-        const parentDisplay = row.parent ? `節點 ${row.parent}` : '-';
-        
-        html += `
-          <tr data-step="${s}" data-subset="${row.subset.join(',')}" data-last="${row.last}">
-            <td style="font-weight: 600; color: var(--text-muted);">步驟 ${s}</td>
-            <td style="font-family: monospace;">${subsetStr}</td>
-            <td style="font-weight: 500;">節點 ${row.last}</td>
-            <td style="font-family: monospace; font-weight: 600;">${distDisplay}</td>
-            <td>${parentDisplay}</td>
-          </tr>
-        `;
-      });
-    }
-  });
-  
-  tbody.innerHTML = html;
-}
-
-function updateDpTableHighlight(subtask, currentPlaybackStep) {
-  let optSubset = [];
-  let optLastNode = null;
-  const stepData = subtask.result.dp_steps[currentPlaybackStep - 1];
-  if (stepData && stepData.path && stepData.path.length >= 2) {
-    const path1based = stepData.path.map(idx => idx + 1);
-    optLastNode = path1based[path1based.length - 1];
-    if (path1based.length > 2) {
-      optSubset = path1based.slice(1, path1based.length - 1);
-    }
-  }
-  optSubset.sort((a, b) => a - b);
-  const optSubsetStr = optSubset.join(',');
-  
-  const rows = document.querySelectorAll('#dp-table-body tr');
-  rows.forEach(row => {
-    const stepVal = parseInt(row.getAttribute('data-step')) || 0;
-    if (stepVal === 0) return; // Skip placeholder row
-    
-    if (stepVal > currentPlaybackStep) {
-      row.classList.add('pending-state');
-      row.classList.remove('highlight-row');
-    } else {
-      row.classList.remove('pending-state');
-      
-      const rowSubset = row.getAttribute('data-subset') || '';
-      const rowLast = parseInt(row.getAttribute('data-last')) || 0;
-      
-      const isSubsetMatch = (rowSubset === optSubsetStr);
-      const isLastMatch = (rowLast === optLastNode);
-      const isHighlight = isSubsetMatch && isLastMatch && (stepVal === currentPlaybackStep);
-      
-      if (isHighlight) {
-        row.classList.add('highlight-row');
-      } else {
-        row.classList.remove('highlight-row');
-      }
-    }
-  });
-}
-
-function clearDpTableHighlights() {
-  const rows = document.querySelectorAll('#dp-table-body tr');
-  rows.forEach(row => {
-    row.classList.remove('highlight-row');
-    row.classList.remove('pending-state');
-  });
+  panel.classList.add('hidden');
 }
 
 function toggleComparisonCollapse() {
@@ -1017,17 +658,8 @@ function updateComparisonTable(task) {
       badgeHtml = '<span class="badge badge-queued" style="font-size:0.7rem;padding:0.1rem 0.4rem;">等待中</span>';
     }
     
-    const isActive = sub.id === dpPlaybackWorkerId ? 'active-preview' : '';
-    if (isActive) {
-      if (rowClass) {
-        rowClass = rowClass.replace('class="', 'class="active-preview ');
-      } else {
-        rowClass = `class="active-preview"`;
-      }
-    }
-    
     html += `
-      <tr ${rowClass} data-subtask-id="${sub.id}" onclick="selectSubtaskForPreview('${sub.id}')">
+      <tr ${rowClass}>
         <td style="font-weight: 500;">${routeStartText}</td>
         <td style="font-family: monospace;">${workerText}</td>
         <td style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${tourText}">${tourText}</td>
@@ -1039,52 +671,5 @@ function updateComparisonTable(task) {
   });
   
   tbody.innerHTML = html;
-}
-
-function selectSubtaskForPreview(subtaskId) {
-  const select = document.getElementById('select-worker-dp');
-  if (select) {
-    select.value = subtaskId;
-  }
-  
-  stopDpPlayback();
-  
-  dpPlaybackWorkerId = subtaskId;
-  
-  const task = tasks.find(t => t.id === currentSelectedTaskId);
-  if (task && task.subtasks) {
-    const sub = task.subtasks.find(s => s.id === subtaskId);
-    if (sub && sub.result && sub.result.dp_steps) {
-      // Render complete table
-      renderCompleteDpTable(sub);
-      
-      const stepsCount = sub.result.dp_steps.length;
-      dpPlaybackStep = stepsCount; // Final step (fully solved)
-      
-      const slider = document.getElementById('slider-dp-step');
-      if (slider) {
-        slider.min = 1;
-        slider.max = stepsCount;
-        slider.value = stepsCount;
-      }
-      
-      const stepData = sub.result.dp_steps[stepsCount - 1];
-      updateDpStepInfo(stepsCount, stepsCount, stepData ? stepData.distance : null);
-    }
-  }
-  
-  highlightComparisonActiveRow(subtaskId);
-  drawCanvas();
-}
-
-function highlightComparisonActiveRow(subtaskId) {
-  const rows = document.querySelectorAll('#comparison-table-body tr');
-  rows.forEach(row => {
-    if (row.getAttribute('data-subtask-id') === subtaskId) {
-      row.classList.add('active-preview');
-    } else {
-      row.classList.remove('active-preview');
-    }
-  });
 }
 
