@@ -12,6 +12,8 @@ services:
       - "3000:3000"
     networks:
       - tsp-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: always  # 容器異常退出時自動重啟
 
   # Worker A 節點：負責執行 TSP 求解運算

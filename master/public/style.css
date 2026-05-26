@@ -976,8 +976,8 @@ canvas {
 }
 
 .comparison-scroll-container {
-  max-height: 200px;
-  overflow-y: auto;
+  max-height: none;
+  overflow-y: visible;
   transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -1064,6 +1064,33 @@ canvas {
   filter: grayscale(100%);
   pointer-events: none;
   transition: all 0.3s ease;
+}
+
+/* Container control buttons inside worker card header */
+.btn-toggle-start {
+  background: rgba(16, 185, 129, 0.1) !important;
+  border: 1px solid rgba(16, 185, 129, 0.3) !important;
+  color: #34d399 !important;
+  transition: all 0.2s ease;
+}
+
+.btn-toggle-start:hover {
+  background: rgba(16, 185, 129, 0.25) !important;
+  color: #fff !important;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+}
+
+.btn-toggle-stop {
+  background: rgba(239, 68, 68, 0.1) !important;
+  border: 1px solid rgba(239, 68, 68, 0.3) !important;
+  color: #fca5a5 !important;
+  transition: all 0.2s ease;
+}
+
+.btn-toggle-stop:hover {
+  background: rgba(239, 68, 68, 0.25) !important;
+  color: #fff !important;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
 }
 
 

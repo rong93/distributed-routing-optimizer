@@ -156,7 +156,7 @@
         <div class="card monitor-card">
           <div class="card-header">
             <i class="fa-solid fa-chart-line header-icon"></i>
-            <h2>節點運作與資源狀態監控 (每 3 秒更新)</h2>
+            <h2>節點運作與資源狀態監控 (每 1 秒更新)</h2>
           </div>
           <div class="card-body">
             <div class="monitor-grid" id="monitor-grid">
@@ -198,7 +198,12 @@
                     <span class="node-dot offline"></span>
                     <h3>Worker A</h3>
                   </div>
-                  <span class="node-badge-role worker">SOLVER</span>
+                  <div class="node-actions" style="display: flex; align-items: center; gap: 0.4rem;">
+                    <button class="btn-small btn-toggle" id="btn-toggle-Worker-A" onclick="toggleWorkerContainer('Worker A')" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; display: inline-flex; align-items: center; gap: 0.25rem;">
+                      <i class="fa-solid fa-spinner fa-spin"></i> 偵測中
+                    </button>
+                    <span class="node-badge-role worker">SOLVER</span>
+                  </div>
                 </div>
                 <div class="node-metrics">
                   <div class="metric">
@@ -232,7 +237,12 @@
                     <span class="node-dot offline"></span>
                     <h3>Worker B</h3>
                   </div>
-                  <span class="node-badge-role worker">SOLVER</span>
+                  <div class="node-actions" style="display: flex; align-items: center; gap: 0.4rem;">
+                    <button class="btn-small btn-toggle" id="btn-toggle-Worker-B" onclick="toggleWorkerContainer('Worker B')" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; display: inline-flex; align-items: center; gap: 0.25rem;">
+                      <i class="fa-solid fa-spinner fa-spin"></i> 偵測中
+                    </button>
+                    <span class="node-badge-role worker">SOLVER</span>
+                  </div>
                 </div>
                 <div class="node-metrics">
                   <div class="metric">
@@ -266,7 +276,12 @@
                     <span class="node-dot offline"></span>
                     <h3>Worker C</h3>
                   </div>
-                  <span class="node-badge-role worker">SOLVER</span>
+                  <div class="node-actions" style="display: flex; align-items: center; gap: 0.4rem;">
+                    <button class="btn-small btn-toggle" id="btn-toggle-Worker-C" onclick="toggleWorkerContainer('Worker C')" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; display: inline-flex; align-items: center; gap: 0.25rem;">
+                      <i class="fa-solid fa-spinner fa-spin"></i> 偵測中
+                    </button>
+                    <span class="node-badge-role worker">SOLVER</span>
+                  </div>
                 </div>
                 <div class="node-metrics">
                   <div class="metric">

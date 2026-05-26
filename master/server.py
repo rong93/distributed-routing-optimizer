@@ -4,6 +4,9 @@ import re
 import threading
 import subprocess
 import requests
+import socket
+import http.client
+import json
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
@@ -100,8 +103,8 @@ def dispatch_pending_tasks():
     # 非同步分發子任務給 Worker（避免阻塞主執行緒）
     def async_dispatch():
         try:
-            # 透過 HTTP POST 將任務資料傳送給 Worker 的 /solve 端點
-            res = requests.post(f"{available_worker['url']}/solve", json=payload, timeout=3)
+            # 透過 HTTP POST 將任務資料傳送給 Worker 的 /solve 端點，增加逾時為 10.0 秒以適應高 CPU 負載
+            res = requests.post(f"{available_worker['url']}/solve", json=payload, timeout=10.0)
             if res.status_code != 200:
                 print(f"[Master] Worker {available_worker['id']} rejected subtask {pending_subtask['id']}: {res.text}")
                 reset_subtask(target_task["id"], pending_subtask["id"], available_worker["id"])
@@ -116,6 +119,52 @@ def dispatch_pending_tasks():
     # 在背景執行緒中執行網路請求
     threading.Thread(target=async_dispatch).start()
 
+def update_task_status_and_workers(task):
+    """根據子任務的狀態，重新計算主任務的狀態以及參與的 Worker 列表。"""
+    if not task.get("subtasks"):
+        return
+        
+    if task.get("status") in ("completed", "failed"):
+        return
+
+    # 1. 重新計算目前「正在參與」或「曾經參與」計算的 Worker 列表
+    all_workers = {sub["workerId"] for sub in task["subtasks"] if sub["workerId"]}
+    task["workerId"] = ", ".join(sorted(all_workers)) if all_workers else None
+
+    # 2. 檢查子任務狀態
+    all_done = True
+    any_running = False
+    any_queued = False
+    
+    for sub in task["subtasks"]:
+        if sub["status"] == "running":
+            any_running = True
+            all_done = False
+        elif sub["status"] == "queued":
+            any_queued = True
+            all_done = False
+
+    if all_done:
+        completed_subs = [sub for sub in task["subtasks"] if sub["status"] == "completed" and sub["result"]]
+        if completed_subs:
+            task["status"] = "completed"
+            best_sub = min(completed_subs, key=lambda x: x["result"]["distance"])
+            task["result"] = best_sub["result"].copy()
+            if "startTime" in task:
+                elapsed_ms = int((time.time() - task["startTime"]) * 1000)
+                task["result"]["time"] = max(1, elapsed_ms)
+            print(f"[Master] Task {task['id']} fully completed! Best distance: {task['result']['distance']} via {best_sub['workerId']}")
+        else:
+            task["status"] = "failed"
+            errors = [sub["error"] for sub in task["subtasks"] if sub["error"]]
+            task["error"] = errors[0] if errors else "All subtasks failed"
+            print(f"[Master] Task {task['id']} failed. All subtasks failed.")
+    else:
+        if any_running:
+            task["status"] = "running"
+        elif any_queued:
+            task["status"] = "queued"
+
 def reset_subtask(task_id, subtask_id, worker_id):
     """當 Worker 分發失敗時，將子任務狀態還原回佇列中，等待重新分配。"""
     with db_lock:
@@ -128,16 +177,32 @@ def reset_subtask(task_id, subtask_id, worker_id):
                 subtask["status"] = "queued"
                 subtask["workerId"] = None
             
-            # 重新計算目前仍在參與計算的 Worker 清單
-            active_workers = {sub["workerId"] for sub in task["subtasks"] if sub["workerId"]}
-            task["workerId"] = ", ".join(sorted(active_workers)) if active_workers else None
-            if not active_workers:
-                task["status"] = "queued"
+            # 使用統一方法更新狀態與參與者
+            update_task_status_and_workers(task)
                 
         if worker:
-            worker["status"] = "offline"
-            worker["currentTaskId"] = None
+            # 僅清除當前任務，但不立刻標記為離線（offline），交由心跳檢測 (heartbeat_loop) 統一判定
+            if worker.get("currentTaskId") == subtask_id:
+                worker["currentTaskId"] = None
             handle_worker_failure(worker)
+
+def reclaim_worker_tasks(worker_id):
+    """將分配給特定離線 Worker 的所有執行中子任務重新排程。"""
+    orphaned_subtasks = []
+    with db_lock:
+        for t in tasks:
+            if t.get("subtasks"):
+                for sub in t["subtasks"]:
+                    if sub["status"] == "running" and sub["workerId"] == worker_id:
+                        orphaned_subtasks.append(sub["id"])
+                        
+    for subtask_id in orphaned_subtasks:
+        reschedule_task(subtask_id, worker_id)
+
+    # 額外安全檢查：確保所有未完成任務的狀態與子任務狀態保持一致
+    with db_lock:
+        for t in tasks:
+            update_task_status_and_workers(t)
 
 def handle_worker_failure(worker):
     """處理 Worker 失敗：累計失敗次數，達到 3 次後標記為離線並重新分配其任務。"""
@@ -146,11 +211,8 @@ def handle_worker_failure(worker):
         if worker["status"] != "offline":
             print(f"[Master] Worker {worker['id']} marked OFFLINE (heartbeat missed).")
             worker["status"] = "offline"
-            
-            if worker["currentTaskId"]:
-                failed_task_id = worker["currentTaskId"]
-                worker["currentTaskId"] = None
-                reschedule_task(failed_task_id, worker["id"])
+            worker["currentTaskId"] = None
+            threading.Thread(target=reclaim_worker_tasks, args=(worker["id"],)).start()
 
 def reschedule_task(subtask_id, worker_id):
     """子任務重新排程：將離線 Worker 正在處理的子任務放回佇列，等待其他 Worker 接手。"""
@@ -172,9 +234,8 @@ def reschedule_task(subtask_id, worker_id):
             target_subtask["status"] = "queued"
             target_subtask["workerId"] = None
             
-            # 重新計算目前仍在參與計算的 Worker 清單
-            active_workers = {sub["workerId"] for sub in target_task["subtasks"] if sub["workerId"]}
-            target_task["workerId"] = ", ".join(sorted(active_workers)) if active_workers else None
+            # 使用統一方法更新狀態與參與者
+            update_task_status_and_workers(target_task)
             
     # 等待 0.5 秒後嘗試重新分發佇列中的子任務
     time.sleep(0.5)
@@ -246,6 +307,7 @@ def create_task():
         "result": None,            # 最終計算結果（所有子任務中距離最短的那個）
         "error": None,
         "createdAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "startTime": time.time(),  # 紀錄主任務提交時的起點時間（用於計算總耗時）
         "subtasks": subtasks       # 所有子任務列表
     }
 
@@ -330,31 +392,8 @@ def task_complete():
                 target_subtask["result"] = result
                 print(f"[Master] Subtask {subtask_id} completed on {worker_id}. Distance: {result['distance']}")
 
-            # 檢查該主任務的所有子任務是否都已完成
-            all_done = True
-            for sub in target_task["subtasks"]:
-                if sub["status"] in ("queued", "running"):
-                    all_done = False
-                    break
-            
-            if all_done:
-                # 篩選出所有成功完成的子任務
-                completed_subs = [sub for sub in target_task["subtasks"] if sub["status"] == "completed" and sub["result"]]
-                if completed_subs:
-                    # 從所有子任務的結果中，找出距離最短的作為最終最佳解
-                    best_sub = min(completed_subs, key=lambda x: x["result"]["distance"])
-                    target_task["status"] = "completed"
-                    target_task["result"] = best_sub["result"]
-                    
-                    # 記錄所有參與計算的 Worker
-                    all_workers = {sub["workerId"] for sub in target_task["subtasks"] if sub["workerId"]}
-                    target_task["workerId"] = ", ".join(sorted(all_workers))
-                    print(f"[Master] Task {target_task['id']} fully completed! Best distance: {target_task['result']['distance']} via {best_sub['workerId']}")
-                else:
-                    target_task["status"] = "failed"
-                    errors = [sub["error"] for sub in target_task["subtasks"] if sub["error"]]
-                    target_task["error"] = errors[0] if errors else "All subtasks failed"
-                    print(f"[Master] Task {target_task['id']} failed. All subtasks failed.")
+            # 使用統一方法更新狀態與參與者（自動處理 completed / failed / queued / running 等狀態轉換）
+            update_task_status_and_workers(target_task)
 
         # 將完成任務的 Worker 狀態改回 online（空閒），準備接下一個子任務
         worker = next((w for w in workers if w["id"] == worker_id), None)
@@ -382,6 +421,109 @@ def monitor_report():
         }
     return jsonify({"message": "Acknowledge stats report"})
 
+# Docker API 輔助工具：透過 Unix Socket 與 Docker Daemon 通訊
+class UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, socket_path):
+        super().__init__("localhost")
+        self.socket_path = socket_path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(self.socket_path)
+
+def docker_api_request(method, path):
+    """透過 Unix Socket /var/run/docker.sock 對 Docker API 發送 HTTP 請求。"""
+    socket_path = "/var/run/docker.sock"
+    if not os.path.exists(socket_path):
+        print(f"[Docker API] Socket file not found at {socket_path}")
+        return None
+    try:
+        conn = UnixHTTPConnection(socket_path)
+        conn.request(method, path)
+        res = conn.getresponse()
+        data = res.read()
+        conn.close()
+        if res.status in (200, 201, 204):
+            if data:
+                return json.loads(data.decode("utf-8"))
+            return True
+        else:
+            print(f"[Docker API] HTTP {res.status}: {data.decode('utf-8')}")
+            return None
+    except Exception as e:
+        print(f"[Docker API] Error communicating with socket: {e}")
+        return None
+
+# Worker ID 與 Docker 容器名稱對照表
+WORKER_CONTAINERS = {
+    "Worker A": "tsp-worker-a",
+    "Worker B": "tsp-worker-b",
+    "Worker C": "tsp-worker-c"
+}
+
+def get_container_status(container_name):
+    """查詢容器目前的運行狀態。"""
+    res = docker_api_request("GET", f"/containers/{container_name}/json")
+    if res and "State" in res and "Status" in res["State"]:
+        return res["State"]["Status"]  # 例如 "running", "exited"
+    return "unknown"
+
+def toggle_container(container_name):
+    """根據容器當前狀態，進行啟動或關閉。"""
+    status = get_container_status(container_name)
+    if status == "running":
+        print(f"[Docker API] Stopping container {container_name}...")
+        # 呼叫 Docker Stop API，帶入 t=1 參數（優雅退場時間為 1 秒），避免預設 10 秒的卡頓
+        res = docker_api_request("POST", f"/containers/{container_name}/stop?t=1")
+        return "stopped" if res else "error"
+    else:
+        print(f"[Docker API] Starting container {container_name}...")
+        # 呼叫 Docker Start API
+        res = docker_api_request("POST", f"/containers/{container_name}/start")
+        return "running" if res else "error"
+
+# API：控制 Worker 容器的開啟與關閉
+@app.route('/api/workers/<worker_id>/toggle', methods=['POST'])
+def toggle_worker_container(worker_id):
+    container_name = WORKER_CONTAINERS.get(worker_id)
+    if not container_name:
+        return jsonify({"error": f"Worker {worker_id} not found"}), 404
+        
+    res_status = toggle_container(container_name)
+    if res_status == "error":
+        return jsonify({"error": "Failed to toggle container state"}), 500
+        
+    # 如果容器被手動關閉，後端主動立即標記狀態為離線，並回收未完成的子任務
+    if res_status == "stopped":
+        with db_lock:
+            worker = next((w for w in workers if w["id"] == worker_id), None)
+            if worker:
+                worker["status"] = "offline"
+                worker["currentTaskId"] = None
+                # 在背景非同步重分配任務，防止 API 卡死
+                threading.Thread(target=reclaim_worker_tasks, args=(worker["id"],)).start()
+                    
+    return jsonify({"status": "success", "containerStatus": res_status})
+
+# 背景快取：定期從 Docker Daemon 取得各 Worker 容器的實際運行狀態（避免在 API 請求中即時查詢造成鎖阻塞）
+container_status_cache = {
+    "Worker A": "unknown",
+    "Worker B": "unknown",
+    "Worker C": "unknown"
+}
+
+def container_status_poller():
+    """背景執行緒：每 2 秒更新一次各 Worker 容器的 Docker 運行狀態快取。"""
+    print("[Master] Container status poller thread active.")
+    while True:
+        for worker_id, container_name in WORKER_CONTAINERS.items():
+            try:
+                status = get_container_status(container_name)
+                container_status_cache[worker_id] = status
+            except Exception:
+                container_status_cache[worker_id] = "unknown"
+        time.sleep(2)
+
 # API：取得整體系統監控資訊（前端儀表板用來顯示 Worker 狀態和資源使用率）
 @app.route('/api/monitor', methods=['GET'])
 def get_monitor():
@@ -393,15 +535,15 @@ def get_monitor():
                 resource_stats[w["id"]]["cpu"] = 0.0
                 resource_stats[w["id"]]["memory"] = 0.0
                 
-        workers_list = [
-            {
+        workers_list = []
+        for w in workers:
+            workers_list.append({
                 "id": w["id"],
                 "status": w["status"],
                 "failCount": w["failCount"],
-                "currentTaskId": w["currentTaskId"]
-            }
-            for w in workers
-        ]
+                "currentTaskId": w["currentTaskId"],
+                "containerStatus": container_status_cache.get(w["id"], "unknown")
+            })
         
     return jsonify({
         "workers": workers_list,
@@ -413,23 +555,38 @@ def heartbeat_loop():
     print("[Master] Heartbeat thread active.")
     while True:
         for w in workers:
+            # 如果容器已被使用者手動停止，直接標記為 offline，跳過 TCP 健康檢查
+            # 避免對已停止容器的 5 秒 TCP 逾時等待拖慢整個心跳迴圈
+            cached_cstatus = container_status_cache.get(w["id"], "running")
+            if cached_cstatus != "running":
+                with db_lock:
+                    if w["status"] != "offline":
+                        w["status"] = "offline"
+                        w["currentTaskId"] = None
+                        print(f"[Master] Worker {w['id']} container stopped, marking offline.")
+                        threading.Thread(target=reclaim_worker_tasks, args=(w["id"],)).start()
+                continue
+
             try:
-                res = requests.get(f"{w['url']}/health", timeout=1.5)
+                res = requests.get(f"{w['url']}/health", timeout=2.0)
                 if res.status_code == 200:
                     body = res.json()
-                    old_status = w["status"]
-                    w["status"] = "busy" if body.get("currentTaskId") else "online"
-                    w["currentTaskId"] = body.get("currentTaskId")
-                    w["failCount"] = 0
-                    resource_stats[w["id"]]["lastReport"] = int(time.time() * 1000)
-                    
-                    if old_status == "offline":
-                        print(f"[Master] Worker {w['id']} recovered and is ONLINE.")
-                        threading.Thread(target=dispatch_pending_tasks).start()
+                    with db_lock:
+                        old_status = w["status"]
+                        w["status"] = "busy" if body.get("currentTaskId") else "online"
+                        w["currentTaskId"] = body.get("currentTaskId")
+                        w["failCount"] = 0
+                        resource_stats[w["id"]]["lastReport"] = int(time.time() * 1000)
+                        
+                        if old_status == "offline":
+                            print(f"[Master] Worker {w['id']} recovered and is ONLINE.")
+                            threading.Thread(target=dispatch_pending_tasks).start()
                 else:
-                    handle_worker_failure(w)
+                    with db_lock:
+                        handle_worker_failure(w)
             except Exception:
-                handle_worker_failure(w)
+                with db_lock:
+                    handle_worker_failure(w)
         
         # 每輪心跳結束後，順便檢查是否有待分發的子任務
         dispatch_pending_tasks()
@@ -527,7 +684,7 @@ def master_telemetry_loop():
             }
         except Exception:
             pass
-        time.sleep(3)
+        time.sleep(1)  # 將遙測間隔縮短為 1 秒，讓資源狀態呈現更即時
 
 if __name__ == '__main__':
     # 啟動心跳檢測背景執行緒（持續監控 Worker 是否存活）
@@ -537,6 +694,10 @@ if __name__ == '__main__':
     # 啟動系統資源監控背景執行緒（持續收集 Master 的 CPU / 記憶體使用率）
     telemetry_thread = threading.Thread(target=master_telemetry_loop, daemon=True)
     telemetry_thread.start()
+    
+    # 啟動 Docker 容器狀態輪詢背景執行緒（每 2 秒快取一次各 Worker 的容器運行狀態）
+    container_poller_thread = threading.Thread(target=container_status_poller, daemon=True)
+    container_poller_thread.start()
     
     print(f"[Master] Launching Flask on port {PORT}...")
     app.run(host='0.0.0.0', port=PORT, threaded=True)

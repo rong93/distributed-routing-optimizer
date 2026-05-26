@@ -164,15 +164,13 @@ def get_fallback_cpu():
         return 5.0
 
 def telemetry_thread_loop():
-    """定期向 Master 回報系統資源使用狀況（CPU、記憶體）。"""
+    """定期向 Master 回報系統資源使用狀況（CPU、記憶體）。
+    直接從 /proc/stat 和 /proc/meminfo 讀取，避免 top 指令在高負載下搶占 CPU。"""
     print(f"[{WORKER_ID}] Telemetry thread active.")
     while True:
         try:
-            cpu, mem = parse_top_metrics()
-            if cpu is None:
-                cpu = get_fallback_cpu()
-            if mem is None:
-                mem = get_fallback_mem()
+            cpu = get_fallback_cpu()
+            mem = get_fallback_mem()
             
             # 將數值限制在 0~100 的合理範圍內
             cpu = max(0.0, min(100.0, cpu))
@@ -183,12 +181,12 @@ def telemetry_thread_loop():
                 "cpu": round(cpu, 1),
                 "memory": round(mem, 1)
             }
-            # 透過 HTTP POST 將資源使用數據回報給 Master
-            requests.post(f"{MASTER_URL}/api/monitor/report", json=payload, timeout=2)
+            # 透過 HTTP POST 將資源使用數據回報給 Master，增加逾時保護以防 Master 忙碌
+            requests.post(f"{MASTER_URL}/api/monitor/report", json=payload, timeout=5)
         except Exception:
             # Master 啟動期間可能尚未就緒，靜默忽略錯誤
             pass
-        time.sleep(3)
+        time.sleep(1)  # 將遙測回報間隔改為 1 秒以達到即時更新效果
 
 if __name__ == '__main__':
     # 啟動系統資源回報的背景執行緒（每 3 秒回報一次）

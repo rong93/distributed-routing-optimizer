@@ -4,6 +4,7 @@ let tasks = [];
 let currentSelectedTaskId = null;
 let monitorIntervalId = null;
 let tasksIntervalId = null;
+let transitioningWorkers = new Set();
 
 // 時間格式化輔助函式（將毫秒轉換為幾分幾秒，小於一分則顯示秒數）
 function formatTime(ms) {
@@ -514,21 +515,45 @@ function updateMonitorUI(data) {
     const workerStats = resources[id] || { cpu: 0, memory: 0 };
 
     if (workerInfo) {
-      updateNodeStats(htmlId, workerInfo.status, workerStats.cpu, workerStats.memory, workerInfo.currentTaskId);
+      updateNodeStats(htmlId, workerInfo.status, workerStats.cpu, workerStats.memory, workerInfo.currentTaskId, workerInfo.containerStatus);
     } else {
-      updateNodeStats(htmlId, 'offline', 0, 0);
+      updateNodeStats(htmlId, 'offline', 0, 0, null, 'unknown');
     }
   });
 }
 
 // 輔助函式：更新特定節點卡片的 UI 顯示
-function updateNodeStats(nodeHtmlId, status, cpu, memory, currentTaskId = null) {
+function updateNodeStats(nodeHtmlId, status, cpu, memory, currentTaskId = null, containerStatus = null) {
   const card = document.getElementById(`node-${nodeHtmlId}`);
   if (!card) return;
 
   const dot = card.querySelector('.node-dot');
   const footer = card.querySelector('.node-footer');
   
+  // 更新控制按鈕狀態（僅 Worker 卡片有控制按鈕）
+  const toggleBtn = document.getElementById(`btn-toggle-${nodeHtmlId}`);
+  if (toggleBtn && containerStatus) {
+    const isTransitioning = transitioningWorkers.has(nodeHtmlId.replace('-', ' '));
+    if (isTransitioning) {
+      toggleBtn.disabled = true;
+      toggleBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 處理中...';
+      toggleBtn.className = 'btn-small';
+    } else {
+      toggleBtn.disabled = false;
+      if (containerStatus === 'running') {
+        toggleBtn.innerHTML = '<i class="fa-solid fa-power-off"></i> 關閉';
+        toggleBtn.className = 'btn-small btn-toggle-stop';
+      } else if (containerStatus === 'exited' || containerStatus === 'stopped') {
+        toggleBtn.innerHTML = '<i class="fa-solid fa-play"></i> 啟動';
+        toggleBtn.className = 'btn-small btn-toggle-start';
+      } else {
+        toggleBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 偵測中';
+        toggleBtn.disabled = true;
+        toggleBtn.className = 'btn-small';
+      }
+    }
+  }
+
   // 更新離線透明度樣式
   if (status === 'offline') {
     card.classList.add('offline-node');
@@ -670,7 +695,7 @@ function updateComparisonTable(task) {
       <tr ${rowClass}>
         <td style="font-weight: 500;">${routeStartText}</td>
         <td style="font-family: monospace;">${workerText}</td>
-        <td style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${tourText}">${tourText}</td>
+        <td style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace; word-break: break-all;" title="${tourText}">${tourText}</td>
         <td style="font-weight: 600; font-family: monospace;">${distText}</td>
         <td style="font-family: monospace;">${timeText}</td>
         <td>${badgeHtml}</td>
@@ -680,4 +705,37 @@ function updateComparisonTable(task) {
   
   tbody.innerHTML = html;
 }
+
+// 控制 Worker 容器啟動或關閉
+function toggleWorkerContainer(workerId) {
+  if (transitioningWorkers.has(workerId)) return; // 防止重複點擊
+  
+  transitioningWorkers.add(workerId);
+  const htmlId = workerId.replace(' ', '-');
+  const toggleBtn = document.getElementById(`btn-toggle-${htmlId}`);
+  if (toggleBtn) {
+    toggleBtn.disabled = true;
+    toggleBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 處理中...';
+  }
+
+  fetch(`/api/workers/${workerId}/toggle`, {
+    method: 'POST'
+  })
+  .then(res => {
+    if (!res.ok) throw new Error('控制容器狀態失敗');
+    return res.json();
+  })
+  .then(data => {
+    // 成功後立即手動觸發一次監控更新，獲得最新狀態
+    fetchMonitor();
+  })
+  .catch(err => {
+    alert('伺服器錯誤：' + err.message);
+  })
+  .finally(() => {
+    transitioningWorkers.delete(workerId);
+    fetchMonitor();
+  });
+}
+
 
