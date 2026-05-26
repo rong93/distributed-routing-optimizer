@@ -1,12 +1,24 @@
-// State variables
+// 狀態變數
 let selectedPoints = [];
 let tasks = [];
 let currentSelectedTaskId = null;
 let monitorIntervalId = null;
 let tasksIntervalId = null;
 
+// 時間格式化輔助函式（將毫秒轉換為幾分幾秒，小於一分則顯示秒數）
+function formatTime(ms) {
+  if (ms === null || ms === undefined || isNaN(ms)) return '-';
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) {
+    return `${totalSeconds.toFixed(2)} 秒`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = (totalSeconds % 60).toFixed(2);
+  return `${minutes} 分 ${seconds} 秒`;
+}
 
-// DOM Elements
+
+// DOM 元素參照
 const canvas = document.getElementById('tsp-canvas');
 const ctx = canvas.getContext('2d');
 const txtTaskName = document.getElementById('task-name');
@@ -19,45 +31,45 @@ const taskTableBody = document.getElementById('task-table-body');
 const canvasModeBadge = document.getElementById('canvas-mode-badge');
 const btnResetView = document.getElementById('btn-reset-view');
 
-// Canvas Overlay details
+// 畫布覆蓋層詳細資訊
 const canvasOverlay = document.getElementById('canvas-overlay-details');
 const overlayTaskName = document.getElementById('overlay-task-name');
 const overlayDistance = document.getElementById('overlay-distance');
 const overlayTime = document.getElementById('overlay-time');
 
-// Initialization
+// 頁面初始化
 window.addEventListener('DOMContentLoaded', () => {
-  // Clear canvas
+  // 清除畫布並繪製初始狀態
   drawCanvas();
 
-  // Setup Event Listeners
+  // 設定事件監聽器
   canvas.addEventListener('click', handleCanvasClick);
   btnGenerateRandom.addEventListener('click', handleGenerateRandom);
   btnClearPoints.addEventListener('click', handleClearPoints);
   btnSubmitTask.addEventListener('click', handleSubmitTask);
   btnResetView.addEventListener('click', resetToEditMode);
   
-  // Setup Comparison Toggle Event Listener
+  // 設定子任務比較表的收合切換事件
   document.getElementById('comparison-toggle-btn').addEventListener('click', toggleComparisonCollapse);
 
-  // Initial loads and start polling
+  // 初始載入任務與監控資料，並開始定時輪詢
   fetchTasks();
   fetchMonitor();
   
-  tasksIntervalId = setInterval(fetchTasks, 1000);
-  monitorIntervalId = setInterval(fetchMonitor, 1000);
+  tasksIntervalId = setInterval(fetchTasks, 1000);   // 每 1 秒更新任務狀態
+  monitorIntervalId = setInterval(fetchMonitor, 1000); // 每 1 秒更新系統監控
 });
 
-// Canvas Drawing Functions
+// 畫布繪製函式
 function drawCanvas() {
   const width = canvas.width;
   const height = canvas.height;
 
-  // 1. Clear background
+  // 1. 清除背景
   ctx.fillStyle = '#030712';
   ctx.fillRect(0, 0, width, height);
 
-  // 2. Draw subtle grid lines
+  // 2. 繪製淡色網格線
   ctx.strokeStyle = '#1e293b';
   ctx.lineWidth = 1;
   const gridSpacing = 40;
@@ -74,7 +86,7 @@ function drawCanvas() {
     ctx.stroke();
   }
 
-  // 3. Determine what points and path to draw
+  // 3. 決定要繪製的點位和路徑
   let pointsToDraw = [];
   let pathIndices = [];
   let pathStatus = 'edit'; // 'edit', 'queued', 'running', 'completed', 'failed'
@@ -95,14 +107,14 @@ function drawCanvas() {
     pointsToDraw = selectedPoints;
   }
 
-  // 4. Draw Path Connections
+  // 4. 繪製路徑連接線
   if (pointsToDraw.length >= 2) {
     ctx.beginPath();
     ctx.lineWidth = 2.5;
 
     if (pathStatus === 'completed' && pathIndices.length > 0) {
-      // Draw optimized TSP tour (open path, no wrap-around)
-      ctx.strokeStyle = '#10b981'; // Emerald Green
+      // 繪製已完成的最佳 TSP 路徑（開放式路徑，不回繞）
+      ctx.strokeStyle = '#10b981'; // 綠色：代表已完成
       ctx.shadowColor = 'rgba(16, 185, 129, 0.4)';
       ctx.shadowBlur = 8;
       
@@ -114,8 +126,8 @@ function drawCanvas() {
       }
       ctx.stroke();
     } else if (pathStatus === 'running') {
-      // Draw running style path (yellow dashed connecting inputs)
-      ctx.strokeStyle = '#3b82f6'; // Blue
+      // 繪製執行中的路徑（藍色虛線）
+      ctx.strokeStyle = '#3b82f6'; // 藍色：代表執行中
       ctx.shadowColor = 'rgba(59, 130, 246, 0.4)';
       ctx.shadowBlur = 8;
       ctx.setLineDash([6, 4]);
@@ -125,9 +137,9 @@ function drawCanvas() {
         ctx.lineTo(pointsToDraw[i][0], pointsToDraw[i][1]);
       }
       ctx.stroke();
-      ctx.setLineDash([]); // Reset
+      ctx.setLineDash([]); // 重置虛線樣式
     } else if (pathStatus === 'edit' || pathStatus === 'queued' || pathStatus === 'failed') {
-      // Faint lines connecting input points chronologically (open path)
+      // 繪製編輯/等待/失敗狀態的淡色連接線（依輸入順序連接）
       ctx.strokeStyle = 'rgba(148, 163, 184, 0.2)';
       ctx.shadowBlur = 0;
       
@@ -138,40 +150,40 @@ function drawCanvas() {
       ctx.stroke();
     }
     
-    // Reset shadow
+    // 重置陰影效果
     ctx.shadowBlur = 0;
   }
 
-  // 5. Draw Points
+  // 5. 繪製節點點位
   pointsToDraw.forEach((pt, index) => {
     const x = pt[0];
     const y = pt[1];
 
-    // Determine point color
-    let pointColor = '#3b82f6'; // Blue for Edit
+    // 決定點位顏色
+    let pointColor = '#3b82f6'; // 藍色：編輯模式
     let haloColor = 'rgba(59, 130, 246, 0.3)';
 
     if (pathStatus === 'completed') {
-      pointColor = '#10b981'; // Emerald
+      pointColor = '#10b981'; // 綠色：已完成
       haloColor = 'rgba(16, 185, 129, 0.3)';
     } else if (pathStatus === 'running') {
-      pointColor = '#f59e0b'; // Amber
+      pointColor = '#f59e0b'; // 琥珀色：執行中
       haloColor = 'rgba(245, 158, 11, 0.3)';
     }
 
-    // Draw glowing halo
+    // 繪製發光光暈效果
     ctx.beginPath();
     ctx.arc(x, y, 9, 0, Math.PI * 2);
     ctx.fillStyle = haloColor;
     ctx.fill();
 
-    // Draw core point
+    // 繪製核心點位
     ctx.beginPath();
     ctx.arc(x, y, 4, 0, Math.PI * 2);
     ctx.fillStyle = pointColor;
     ctx.fill();
 
-    // Highlight start point (index 0 or the first in tour) and end point (last node)
+    // 標記起點（紅色圖圈）和終點（藍色圈圈）
     const isStart = (pathStatus === 'completed' && pathIndices.length > 0) 
       ? (index === pathIndices[0])
       : (index === 0);
@@ -182,7 +194,7 @@ function drawCanvas() {
     if (isStart && pointsToDraw.length > 1) {
       ctx.beginPath();
       ctx.arc(x, y, 13, 0, Math.PI * 2);
-      ctx.strokeStyle = '#ef4444'; // Red ring for Start node
+      ctx.strokeStyle = '#ef4444'; // 紅色圖圈：起點
       ctx.lineWidth = 1.5;
       ctx.stroke();
       
@@ -192,7 +204,7 @@ function drawCanvas() {
     } else if (isEnd && pointsToDraw.length > 1) {
       ctx.beginPath();
       ctx.arc(x, y, 13, 0, Math.PI * 2);
-      ctx.strokeStyle = '#3b82f6'; // Blue ring for End node
+      ctx.strokeStyle = '#3b82f6'; // 藍色圖圈：終點
       ctx.lineWidth = 1.5;
       ctx.stroke();
       
@@ -201,7 +213,7 @@ function drawCanvas() {
       ctx.fillText('END', x, y + 22);
     }
 
-    // Draw node labels (number)
+    // 繪製節點編號標籤
     ctx.fillStyle = '#94a3b8';
     ctx.font = '10px Outfit';
     ctx.textAlign = 'center';
@@ -209,10 +221,10 @@ function drawCanvas() {
   });
 }
 
-// Handle clicking on the canvas to add custom points
+// 處理畫布點擊事件：新增自訂點位
 function handleCanvasClick(e) {
   if (currentSelectedTaskId) {
-    // If viewing a task, clicking the canvas resets to edit mode with the current task's coordinates
+    // 如果正在檢視任務，點擊畫布會切換回編輯模式並載入該任務的座標
     const selectedTask = tasks.find(t => t.id === currentSelectedTaskId);
     if (selectedTask) {
       selectedPoints = [...selectedTask.coords];
@@ -224,30 +236,26 @@ function handleCanvasClick(e) {
 
   const rect = canvas.getBoundingClientRect();
   
-  // Scale mouse coordinates to match canvas internal resolution
+  // 將滑鼠座標縮放為畫布內部解析度
   const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
   const y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
 
-  // Limit max points
-  if (selectedPoints.length >= 15) {
-    alert('最多只能新增 15 個點位！');
-    return;
-  }
+  // 不再限制點位數量上限（GA 演算法可處理大量節點）
 
   selectedPoints.push([x, y]);
   selectedPointsCount.textContent = selectedPoints.length;
   drawCanvas();
 }
 
-// Generate random coordinate points
+// 產生隨機座標點位
 function handleGenerateRandom() {
   if (currentSelectedTaskId) {
     resetToEditMode();
   }
 
   const count = parseInt(inputRandomCount.value) || 10;
-  if (count < 3 || count > 15) {
-    alert('隨機點位數量必須在 3 至 15 之間！');
+  if (count < 3 || count > 100) {
+    alert('隨機點位數量必須在 3 至 100 之間！');
     return;
   }
 
@@ -263,14 +271,14 @@ function handleGenerateRandom() {
   drawCanvas();
 }
 
-// Clear selected points
+// 清除所有已選取的點位
 function handleClearPoints() {
   selectedPoints = [];
   selectedPointsCount.textContent = 0;
   resetToEditMode();
 }
 
-// Submit a new TSP task to Master API
+// 提交新的 TSP 任務到 Master API
 function handleSubmitTask() {
   if (selectedPoints.length < 2) {
     alert('請至少新增 2 個座標點位才能提交任務！');
@@ -296,7 +304,7 @@ function handleSubmitTask() {
     selectedPoints = [];
     selectedPointsCount.textContent = 0;
     
-    // Automatically select the newly created task
+    // 自動選取剛創建的任務以在畫布上顯示
     currentSelectedTaskId = task.id;
     
     fetchTasks();
@@ -310,7 +318,7 @@ function handleSubmitTask() {
   });
 }
 
-// Reset canvas to edit mode
+// 重置畫布為編輯模式
 function resetToEditMode() {
   currentSelectedTaskId = null;
   canvasModeBadge.textContent = '編輯模式';
@@ -331,12 +339,12 @@ function resetToEditMode() {
   
   drawCanvas();
   
-  // Remove highlighted row selection in table
+  // 移除任務列表中的選取反白樣式
   const rows = document.querySelectorAll('#task-table-body tr');
   rows.forEach(r => r.classList.remove('selected'));
 }
 
-// Fetch tasks list from Master
+// 從 Master 取得任務列表
 function fetchTasks() {
   fetch('/api/tasks')
     .then(res => res.json())
@@ -344,7 +352,7 @@ function fetchTasks() {
       tasks = data;
       renderTaskTable();
       
-      // Update canvas overlay details if currently viewing a task
+      // 如果目前正在檢視某個任務，更新畫布覆蓋層的詳細資訊
       if (currentSelectedTaskId) {
         const task = tasks.find(t => t.id === currentSelectedTaskId);
         if (task) {
@@ -363,7 +371,7 @@ function fetchTasks() {
     .catch(err => console.error('Error fetching tasks:', err));
 }
 
-// Render Task Table
+// 繪製任務列表
 function renderTaskTable() {
   if (tasks.length === 0) {
     taskTableBody.innerHTML = `
@@ -396,7 +404,7 @@ function renderTaskTable() {
     
     let resultDisplay = '-';
     if (task.status === 'completed' && task.result) {
-      resultDisplay = `<span style="font-weight:600;color:#10b981">${task.result.distance}</span> <span style="color:#94a3b8;font-size:0.8rem">(${task.result.time}ms)</span>`;
+      resultDisplay = `<span style="font-weight:600;color:#10b981">${task.result.distance} 公尺</span> <span style="color:#94a3b8;font-size:0.8rem">(${formatTime(task.result.time)})</span>`;
     } else if (task.status === 'failed') {
       resultDisplay = `<span style="color:#ef4444" title="${task.error || ''}">運算失敗</span>`;
     }
@@ -422,7 +430,7 @@ function renderTaskTable() {
   taskTableBody.innerHTML = html;
 }
 
-// Select a task to view on Canvas
+// 選取任務以在畫布上檢視
 function selectTask(taskId) {
   currentSelectedTaskId = taskId;
   const task = tasks.find(t => t.id === taskId);
@@ -435,15 +443,15 @@ function selectTask(taskId) {
   renderTaskTable();
 }
 
-// Update the overlay details on the Canvas
+// 更新畫布覆蓋層的詳細資訊
 function updateCanvasOverlay(task) {
   overlayTaskName.textContent = task.name;
   canvasOverlay.classList.remove('hidden');
 
   if (task.status === 'completed' && task.result) {
-    overlayDistance.textContent = task.result.distance;
+    overlayDistance.textContent = `${task.result.distance} 公尺`;
     overlayDistance.style.color = '#10b981';
-    overlayTime.textContent = `${task.result.time} ms`;
+    overlayTime.textContent = formatTime(task.result.time);
   } else if (task.status === 'running') {
     overlayDistance.textContent = '計算中...';
     overlayDistance.style.color = '#3b82f6';
@@ -459,9 +467,9 @@ function updateCanvasOverlay(task) {
   }
 }
 
-// Delete or cancel a task
+// 刪除或取消任務
 function deleteTask(event, taskId) {
-  event.stopPropagation(); // Prevent row click selection trigger
+  event.stopPropagation(); // 阻止事件冒泡，避免觸發行點擊選取
 
   if (!confirm('確定要取消並刪除此任務嗎？')) return;
 
@@ -479,7 +487,7 @@ function deleteTask(event, taskId) {
     .catch(err => alert(err.message));
 }
 
-// Fetch resources monitor metrics from Master
+// 從 Master 取得系統資源監控資料
 function fetchMonitor() {
   fetch('/api/monitor')
     .then(res => res.json())
@@ -489,18 +497,18 @@ function fetchMonitor() {
     .catch(err => console.error('Error fetching monitor telemetry:', err));
 }
 
-// Update Monitor Telemetry Cards
+// 更新系統監控 UI 卡片
 function updateMonitorUI(data) {
   const { workers, resources } = data;
 
-  // 1. Update Master Card
+  // 1. 更新 Master 節點卡片
   const masterStats = resources['Master'] || { cpu: 0, memory: 0 };
   updateNodeStats('Master', 'online', masterStats.cpu, masterStats.memory);
 
-  // 2. Update Worker Cards
+  // 2. 更新各 Worker 節點卡片
   const workerIds = ['Worker A', 'Worker B', 'Worker C'];
   workerIds.forEach(id => {
-    // Standardize IDs for HTML selectors (replace space with dash)
+    // 將 Worker ID 中的空格替換為橫線以符合 HTML 選擇器格式
     const htmlId = id.replace(' ', '-');
     const workerInfo = workers.find(w => w.id === id);
     const workerStats = resources[id] || { cpu: 0, memory: 0 };
@@ -513,7 +521,7 @@ function updateMonitorUI(data) {
   });
 }
 
-// Helper to update a specific node card in UI
+// 輔助函式：更新特定節點卡片的 UI 顯示
 function updateNodeStats(nodeHtmlId, status, cpu, memory, currentTaskId = null) {
   const card = document.getElementById(`node-${nodeHtmlId}`);
   if (!card) return;
@@ -521,24 +529,24 @@ function updateNodeStats(nodeHtmlId, status, cpu, memory, currentTaskId = null) 
   const dot = card.querySelector('.node-dot');
   const footer = card.querySelector('.node-footer');
   
-  // Update offline opacity class
+  // 更新離線透明度樣式
   if (status === 'offline') {
     card.classList.add('offline-node');
   } else {
     card.classList.remove('offline-node');
   }
 
-  // Update Status LED Dot
+  // 更新狀態 LED 小圓點
   dot.className = 'node-dot'; // Reset
   dot.classList.add(status);
 
-  // Update Text Metrics
+  // 更新 CPU 和記憶體的數值顯示
   const cpuText = document.getElementById(`cpu-${nodeHtmlId}`);
   const memText = document.getElementById(`mem-${nodeHtmlId}`);
   if (cpuText) cpuText.textContent = `${cpu}%`;
   if (memText) memText.textContent = `${memory}%`;
 
-  // Update Progress Bars
+  // 更新進度條
   const cpuBar = document.getElementById(`cpu-bar-${nodeHtmlId}`);
   const memBar = document.getElementById(`mem-bar-${nodeHtmlId}`);
 
@@ -551,7 +559,7 @@ function updateNodeStats(nodeHtmlId, status, cpu, memory, currentTaskId = null) 
     memBar.className = 'progress-bar-fill ' + getMetricFillClass(memory);
   }
 
-  // Update Footer (Only for Workers)
+  // 更新底部狀態文字（僅適用於 Worker 卡片）
   if (footer) {
     if (status === 'offline') {
       footer.innerHTML = '<span class="status-msg"><i class="fa-solid fa-triangle-exclamation"></i> 已斷線</span>';
@@ -563,14 +571,14 @@ function updateNodeStats(nodeHtmlId, status, cpu, memory, currentTaskId = null) 
   }
 }
 
-// Determine progress bar color theme based on percentage
+// 根據百分比決定進度條顏色主題
 function getMetricFillClass(val) {
-  if (val < 50) return 'fill-low';     // Green
-  if (val < 80) return 'fill-medium';  // Orange
-  return 'fill-high';                  // Red
+  if (val < 50) return 'fill-low';     // 綠色：低負載
+  if (val < 80) return 'fill-medium';  // 橙色：中負載
+  return 'fill-high';                  // 紅色：高負載
 }
 
-// Comparison Panel Control Functions
+// 子任務比較面板控制函式
 function setupComparisonPanel(task) {
   const panel = document.getElementById('dp-player-panel');
   if (!panel) return;
@@ -640,8 +648,8 @@ function updateComparisonTable(task) {
     if (sub.status === 'completed' && sub.result) {
       const tour1based = sub.result.tour.map(idx => idx + 1);
       tourText = tour1based.join(' ➔ ');
-      distText = `${sub.result.distance}`;
-      timeText = `${sub.result.time} ms`;
+      distText = `${sub.result.distance} 公尺`;
+      timeText = formatTime(sub.result.time);
       
       const isOptimal = sub.id === optimalSubtaskId;
       if (isOptimal) {

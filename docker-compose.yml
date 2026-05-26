@@ -1,6 +1,8 @@
 version: '3.8'
 
+# 定義所有服務容器
 services:
+  # Master 節點：負責前端網頁、任務分發、結果統整
   master:
     build:
       context: ./master
@@ -10,23 +12,25 @@ services:
       - "3000:3000"
     networks:
       - tsp-net
-    restart: always
+    restart: always  # 容器異常退出時自動重啟
 
+  # Worker A 節點：負責執行 TSP 求解運算
   worker-a:
     build:
       context: ./worker
       dockerfile: Dockerfile
     container_name: tsp-worker-a
     ports:
-      - "4001:4000"
+      - "4001:4000"  # 對外映射 Port 4001
     environment:
-      - WORKER_ID=Worker A
-      - PORT=4000
-      - MASTER_URL=http://master:3000
+      - WORKER_ID=Worker A              # Worker 識別名稱
+      - PORT=4000                        # Worker 內部監聽 Port
+      - MASTER_URL=http://master:3000    # Master 的內部網路 URL
     networks:
       - tsp-net
     restart: always
 
+  # Worker B 節點：負責執行 TSP 求解運算
   worker-b:
     build:
       context: ./worker
@@ -42,6 +46,7 @@ services:
       - tsp-net
     restart: always
 
+  # Worker C 節點：負責執行 TSP 求解運算
   worker-c:
     build:
       context: ./worker
@@ -57,6 +62,7 @@ services:
       - tsp-net
     restart: always
 
+# 定義 Docker 內部網路，讓所有容器可以互相通訊
 networks:
   tsp-net:
-    driver: bridge
+    driver: bridge  # 使用橋接網路模式

@@ -8,25 +8,25 @@ import requests
 from flask import Flask, request, jsonify
 import multiprocessing
 
-# Add current directory to path for solver import
+# 將目前目錄加入模組搜尋路徑，以便匯入 solver 模組
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from solver import solve_task_process
 
 app = Flask(__name__)
 
-PORT = int(os.environ.get('PORT', 4000))
-WORKER_ID = os.environ.get('WORKER_ID', 'Worker Test')
-MASTER_URL = os.environ.get('MASTER_URL', 'http://localhost:3000')
+PORT = int(os.environ.get('PORT', 4000))           # Worker 監聽的 Port
+WORKER_ID = os.environ.get('WORKER_ID', 'Worker Test')  # Worker 的識別名稱
+MASTER_URL = os.environ.get('MASTER_URL', 'http://localhost:3000')  # Master 的 URL
 
-current_process = None
-current_task_id = None
+current_process = None   # 目前正在執行的 TSP 求解子程序
+current_task_id = None   # 目前正在處理的子任務 ID
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Heartbeat and status endpoint."""
+    """心跳檢測端點：Master 每 3 秒會呼叫此 API 確認 Worker 是否存活。"""
     global current_process, current_task_id
     
-    # Sync status if process completed in background
+    # 如果子程序已結束（正常完成或異常退出），清除狀態
     if current_process and not current_process.is_alive():
         current_process = None
         current_task_id = None
@@ -39,7 +39,7 @@ def health():
 
 @app.route('/solve', methods=['POST'])
 def solve():
-    """Launch TSP solver on a new task."""
+    """接收 Master 分派的 TSP 子任務並啟動求解程序。"""
     global current_process, current_task_id
     
     if current_process and not current_process.is_alive():
@@ -59,7 +59,7 @@ def solve():
 
     current_task_id = task_id
     
-    # Start TSP Solver in a separate Process to bypass Python's GIL
+    # 在獨立的子程序 (Process) 中啟動 TSP 求解器，以繞過 Python 的 GIL 限制
     current_process = multiprocessing.Process(
         target=solve_task_process,
         args=(task_id, coords, MASTER_URL, WORKER_ID, first_step)
@@ -72,7 +72,7 @@ def solve():
 
 @app.route('/cancel', methods=['POST'])
 def cancel():
-    """Cancel the currently running TSP task."""
+    """取消目前正在執行的 TSP 子任務（由 Master 呼叫）。"""
     global current_process, current_task_id
     data = request.get_json() or {}
     task_id = data.get('taskId')
@@ -83,7 +83,7 @@ def cancel():
             current_process.terminate()
             current_process.join(timeout=1.0)
             if current_process.is_alive():
-                # Force kill if terminate hangs
+                # 如果 terminate 無法停止，強制殺掉子程序
                 current_process.kill()
         
         current_process = None
@@ -93,7 +93,7 @@ def cancel():
     return jsonify({"message": "Task not running on this worker"})
 
 def parse_top_metrics():
-    """Execute top -bn 1 -i -c to extract CPU and memory utilization."""
+    """透過 top 指令解析目前的 CPU 和記憶體使用率。"""
     try:
         result = subprocess.run(['top', '-bn', '1', '-i', '-c'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2)
         stdout = result.stdout
@@ -101,13 +101,13 @@ def parse_top_metrics():
         cpu_usage = None
         mem_usage = None
 
-        # Parse CPU
+        # 解析 CPU 使用率（從閒置率反推）
         idle_match = re.search(r'([\d.,]+)\s+id', stdout)
         if idle_match:
             idle = float(idle_match.group(1).replace(',', '.'))
             cpu_usage = 100.0 - idle
             
-        # Parse Memory
+        # 解析記憶體使用率
         mem_match = re.search(r'(?:Mem|MiB Mem|KiB Mem)\s*:\s*([\d.,]+)\s+total,\s*([\d.,]+)\s+free,\s*([\d.,]+)\s+used', stdout, re.IGNORECASE)
         if mem_match:
             total = float(mem_match.group(1).replace(',', '.'))
@@ -120,7 +120,7 @@ def parse_top_metrics():
         return None, None
 
 def get_fallback_mem():
-    """Fallback memory reader using /proc/meminfo."""
+    """備用方案：當 top 指令無法取得記憶體資訊時，改從 /proc/meminfo 讀取。"""
     try:
         with open('/proc/meminfo', 'r') as f:
             lines = f.readlines()
@@ -143,7 +143,7 @@ def get_fallback_mem():
 prev_idle = 0.0
 prev_total = 0.0
 def get_fallback_cpu():
-    """Fallback CPU tracker reading /proc/stat."""
+    """備用方案：當 top 指令無法取得 CPU 資訊時，改從 /proc/stat 讀取。"""
     global prev_idle, prev_total
     try:
         with open('/proc/stat', 'r') as f:
@@ -164,7 +164,7 @@ def get_fallback_cpu():
         return 5.0
 
 def telemetry_thread_loop():
-    """Periodically report system resources metrics to Master."""
+    """定期向 Master 回報系統資源使用狀況（CPU、記憶體）。"""
     print(f"[{WORKER_ID}] Telemetry thread active.")
     while True:
         try:
@@ -174,7 +174,7 @@ def telemetry_thread_loop():
             if mem is None:
                 mem = get_fallback_mem()
             
-            # Clamp limits
+            # 將數值限制在 0~100 的合理範圍內
             cpu = max(0.0, min(100.0, cpu))
             mem = max(0.0, min(100.0, mem))
 
@@ -183,15 +183,15 @@ def telemetry_thread_loop():
                 "cpu": round(cpu, 1),
                 "memory": round(mem, 1)
             }
-            # POST stats
+            # 透過 HTTP POST 將資源使用數據回報給 Master
             requests.post(f"{MASTER_URL}/api/monitor/report", json=payload, timeout=2)
         except Exception:
-            # Silent ignore during master startup phases
+            # Master 啟動期間可能尚未就緒，靜默忽略錯誤
             pass
         time.sleep(3)
 
 if __name__ == '__main__':
-    # Start resource report daemon
+    # 啟動系統資源回報的背景執行緒（每 3 秒回報一次）
     telemetry_thread = threading.Thread(target=telemetry_thread_loop, daemon=True)
     telemetry_thread.start()
 
