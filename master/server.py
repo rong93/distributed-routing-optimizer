@@ -163,7 +163,16 @@ def update_task_status_and_workers(task):
         if any_running:
             task["status"] = "running"
         elif any_queued:
-            task["status"] = "queued"
+            # 只有當所有 Worker 都處於離線狀態（無法繼續運算）時，才將狀態設為「等待中」；
+            # 或者當有線上 Worker 但全部都忙碌（Busy）於其他任務時，此任務才真正「等待中」；
+            # 否則如果有任何 Worker 空閒 (online)，代表即將立刻分派，維持「執行中」以避免前端狀態閃爍。
+            if all(w["status"] == "offline" for w in workers):
+                task["status"] = "queued"
+            elif any(w["status"] == "online" for w in workers):
+                task["status"] = "running"
+            else:
+                # 所有在線 Worker 都忙碌中，任務在排隊等待
+                task["status"] = "queued"
 
 def reset_subtask(task_id, subtask_id, worker_id):
     """當 Worker 分發失敗時，將子任務狀態還原回佇列中，等待重新分配。"""
@@ -382,6 +391,14 @@ def task_complete():
             if target_task:
                 break
                 
+        # 先將完成任務的 Worker 狀態改回 online（空閒），準備接下一個子任務
+        # 這樣當 update_task_status_and_workers 檢查是否有可用 Worker 時，此 Worker 已被視為 online
+        worker = next((w for w in workers if w["id"] == worker_id), None)
+        if worker and worker["currentTaskId"] == subtask_id:
+            worker["status"] = "online"
+            worker["currentTaskId"] = None
+            worker["failCount"] = 0
+
         if target_task and target_subtask:
             if error:
                 target_subtask["status"] = "failed"
@@ -394,13 +411,6 @@ def task_complete():
 
             # 使用統一方法更新狀態與參與者（自動處理 completed / failed / queued / running 等狀態轉換）
             update_task_status_and_workers(target_task)
-
-        # 將完成任務的 Worker 狀態改回 online（空閒），準備接下一個子任務
-        worker = next((w for w in workers if w["id"] == worker_id), None)
-        if worker and worker["currentTaskId"] == subtask_id:
-            worker["status"] = "online"
-            worker["currentTaskId"] = None
-            worker["failCount"] = 0
 
     threading.Thread(target=dispatch_pending_tasks).start()
     return jsonify({"message": "Acknowledged"})

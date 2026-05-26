@@ -6,6 +6,14 @@ let monitorIntervalId = null;
 let tasksIntervalId = null;
 let transitioningWorkers = new Set();
 
+// 模擬功能狀態變數
+let simState = 'idle'; // 'idle', 'running', 'paused'
+let simProgress = 0.0; // 0.0 到 (tour.length - 1)
+let pausedPosition = null; // [x, y] 暫停時的座標
+let dynamicNewNodes = []; // 暫停時使用者新增的點位
+let animationFrameId = null;
+let lastFrameTime = 0;
+
 // 時間格式化輔助函式（將毫秒轉換為幾分幾秒，小於一分則顯示秒數）
 function formatTime(ms) {
   if (ms === null || ms === undefined || isNaN(ms)) return '-';
@@ -32,11 +40,14 @@ const taskTableBody = document.getElementById('task-table-body');
 const canvasModeBadge = document.getElementById('canvas-mode-badge');
 const btnResetView = document.getElementById('btn-reset-view');
 
-// 畫布覆蓋層詳細資訊
-const canvasOverlay = document.getElementById('canvas-overlay-details');
-const overlayTaskName = document.getElementById('overlay-task-name');
-const overlayDistance = document.getElementById('overlay-distance');
-const overlayTime = document.getElementById('overlay-time');
+// 模擬控制面板 DOM 元素參照
+const simulationPanel = document.getElementById('simulation-panel');
+const btnSimToggle = document.getElementById('btn-sim-toggle');
+const btnSimPause = document.getElementById('btn-sim-pause');
+const btnSimReplan = document.getElementById('btn-sim-replan');
+const btnSimReset = document.getElementById('btn-sim-reset');
+const simStatusText = document.getElementById('sim-status-text');
+
 
 // 頁面初始化
 window.addEventListener('DOMContentLoaded', () => {
@@ -49,6 +60,12 @@ window.addEventListener('DOMContentLoaded', () => {
   btnClearPoints.addEventListener('click', handleClearPoints);
   btnSubmitTask.addEventListener('click', handleSubmitTask);
   btnResetView.addEventListener('click', resetToEditMode);
+  
+  // 模擬控制面板事件監聽 (防禦性設計：避免舊 HTML 快取導致 TypeError)
+  if (btnSimToggle) btnSimToggle.addEventListener('click', handleSimToggle);
+  if (btnSimPause) btnSimPause.addEventListener('click', handleSimPause);
+  if (btnSimReplan) btnSimReplan.addEventListener('click', handleSimReplan);
+  if (btnSimReset) btnSimReset.addEventListener('click', handleSimReset);
   
   // 設定子任務比較表的收合切換事件
   document.getElementById('comparison-toggle-btn').addEventListener('click', toggleComparisonCollapse);
@@ -110,53 +127,180 @@ function drawCanvas() {
 
   // 4. 繪製路徑連接線
   if (pointsToDraw.length >= 2) {
-    ctx.beginPath();
     ctx.lineWidth = 2.5;
 
-    if (pathStatus === 'completed' && pathIndices.length > 0) {
-      // 繪製已完成的最佳 TSP 路徑（開放式路徑，不回繞）
-      ctx.strokeStyle = '#10b981'; // 綠色：代表已完成
+    const drawStaticPath = () => {
+      if (!pathIndices || pathIndices.length === 0) return;
+      ctx.beginPath();
+      ctx.strokeStyle = '#10b981'; // 綠色
       ctx.shadowColor = 'rgba(16, 185, 129, 0.4)';
       ctx.shadowBlur = 8;
       
       const startPt = pointsToDraw[pathIndices[0]];
-      ctx.moveTo(startPt[0], startPt[1]);
-      for (let i = 1; i < pathIndices.length; i++) {
-        const pt = pointsToDraw[pathIndices[i]];
-        ctx.lineTo(pt[0], pt[1]);
+      if (startPt) {
+        ctx.moveTo(startPt[0], startPt[1]);
+        for (let i = 1; i < pathIndices.length; i++) {
+          const pt = pointsToDraw[pathIndices[i]];
+          if (pt) ctx.lineTo(pt[0], pt[1]);
+        }
       }
       ctx.stroke();
+      ctx.shadowBlur = 0;
+    };
+
+    if (pathStatus === 'completed' && pathIndices.length > 0) {
+      if (simState !== 'idle') {
+        try {
+          // --- 模擬中的動態路徑繪製 (均勻像素速度) ---
+          // 1. 計算所有段的長度與累計距離
+          const segmentLengths = [];
+          const cumulativeDistances = [0];
+          for (let i = 0; i < pathIndices.length - 1; i++) {
+            const pt1 = pointsToDraw[pathIndices[i]];
+            const pt2 = pointsToDraw[pathIndices[i+1]];
+            const len = (pt1 && pt2) ? Math.sqrt((pt2[0] - pt1[0])**2 + (pt2[1] - pt1[1])**2) : 0;
+            segmentLengths.push(len);
+            cumulativeDistances.push(cumulativeDistances[i] + len);
+          }
+          const totalDist = cumulativeDistances[cumulativeDistances.length - 1];
+
+          // 2. 依據已走過之像素距離 simProgress，找到當前位於哪個線段 (currSegment) 和比例 t
+          let currSegment = 0;
+          let t = 0.0;
+          
+          if (simProgress >= totalDist) {
+            currSegment = pathIndices.length - 1;
+            t = 0.0;
+          } else {
+            for (let i = 0; i < segmentLengths.length; i++) {
+              if (simProgress >= cumulativeDistances[i] && simProgress < cumulativeDistances[i+1]) {
+                currSegment = i;
+                const segLen = segmentLengths[i];
+                t = segLen > 0 ? (simProgress - cumulativeDistances[i]) / segLen : 0;
+                break;
+              }
+            }
+          }
+
+          let targetX = 0, targetY = 0;
+          if (currSegment >= pathIndices.length - 1) {
+            const pt = pointsToDraw[pathIndices[pathIndices.length - 1]];
+            if (pt) {
+              targetX = pt[0];
+              targetY = pt[1];
+            }
+          } else {
+            const pt1 = pointsToDraw[pathIndices[currSegment]];
+            const pt2 = pointsToDraw[pathIndices[currSegment + 1]];
+            if (pt1 && pt2) {
+              targetX = pt1[0] + (pt2[0] - pt1[0]) * t;
+              targetY = pt1[1] + (pt2[1] - pt1[1]) * t;
+            } else if (pt1) {
+              targetX = pt1[0];
+              targetY = pt1[1];
+            }
+          }
+
+          // A. 繪製「已走過」的實線路徑 (淡綠色)
+          ctx.beginPath();
+          ctx.strokeStyle = '#10b981';
+          ctx.shadowColor = 'rgba(16, 185, 129, 0.3)';
+          ctx.shadowBlur = 6;
+          
+          const startPt = pointsToDraw[pathIndices[0]];
+          if (startPt) {
+            ctx.moveTo(startPt[0], startPt[1]);
+            for (let i = 1; i <= currSegment; i++) {
+              const pt = pointsToDraw[pathIndices[i]];
+              if (pt) ctx.lineTo(pt[0], pt[1]);
+            }
+            // 連接到當前移動點
+            ctx.lineTo(targetX, targetY);
+          }
+          ctx.stroke();
+          ctx.shadowBlur = 0; // 重置陰影
+
+          // B. 繪製「未走過」的虛線路徑 (藍色虛線)
+          if (currSegment < pathIndices.length - 1) {
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.7)'; // 藍色半透明
+            ctx.shadowColor = 'rgba(59, 130, 246, 0.2)';
+            ctx.shadowBlur = 4;
+            ctx.setLineDash([6, 4]);
+            
+            ctx.moveTo(targetX, targetY);
+            for (let i = currSegment + 1; i < pathIndices.length; i++) {
+              const pt = pointsToDraw[pathIndices[i]];
+              if (pt) ctx.lineTo(pt[0], pt[1]);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]); // 重置虛線
+            ctx.shadowBlur = 0;
+          }
+
+          // C. 繪製移動目標的呼吸紅點
+          ctx.beginPath();
+          const pulseRadius = 12 + Math.sin(Date.now() / 150) * 3;
+          ctx.arc(targetX, targetY, pulseRadius, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.25)'; // 發光紅色圈圈
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(targetX, targetY, 6, 0, Math.PI * 2);
+          ctx.fillStyle = '#ef4444'; // 紅色核心
+          ctx.fill();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '8px Arial';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('🚚', targetX, targetY);
+        } catch (e) {
+          console.error("Error drawing dynamic path simulation, falling back to static path:", e);
+          drawStaticPath();
+        }
+      } else {
+        // --- 標準已完成路徑繪製 (靜態綠色實線) ---
+        drawStaticPath();
+      }
     } else if (pathStatus === 'running') {
       // 繪製執行中的路徑（藍色虛線）
-      ctx.strokeStyle = '#3b82f6'; // 藍色：代表執行中
+      ctx.beginPath();
+      ctx.strokeStyle = '#3b82f6';
       ctx.shadowColor = 'rgba(59, 130, 246, 0.4)';
       ctx.shadowBlur = 8;
       ctx.setLineDash([6, 4]);
 
-      ctx.moveTo(pointsToDraw[0][0], pointsToDraw[0][1]);
-      for (let i = 1; i < pointsToDraw.length; i++) {
-        ctx.lineTo(pointsToDraw[i][0], pointsToDraw[i][1]);
+      if (pointsToDraw[0]) {
+        ctx.moveTo(pointsToDraw[0][0], pointsToDraw[0][1]);
+        for (let i = 1; i < pointsToDraw.length; i++) {
+          const pt = pointsToDraw[i];
+          if (pt) ctx.lineTo(pt[0], pt[1]);
+        }
       }
       ctx.stroke();
-      ctx.setLineDash([]); // 重置虛線樣式
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
     } else if (pathStatus === 'edit' || pathStatus === 'queued' || pathStatus === 'failed') {
-      // 繪製編輯/等待/失敗狀態的淡色連接線（依輸入順序連接）
+      // 繪製編輯/等待/失敗狀態的淡色連接線
+      ctx.beginPath();
       ctx.strokeStyle = 'rgba(148, 163, 184, 0.2)';
       ctx.shadowBlur = 0;
       
-      ctx.moveTo(pointsToDraw[0][0], pointsToDraw[0][1]);
-      for (let i = 1; i < pointsToDraw.length; i++) {
-        ctx.lineTo(pointsToDraw[i][0], pointsToDraw[i][1]);
+      if (pointsToDraw[0]) {
+        ctx.moveTo(pointsToDraw[0][0], pointsToDraw[0][1]);
+        for (let i = 1; i < pointsToDraw.length; i++) {
+          const pt = pointsToDraw[i];
+          if (pt) ctx.lineTo(pt[0], pt[1]);
+        }
       }
       ctx.stroke();
     }
-    
-    // 重置陰影效果
-    ctx.shadowBlur = 0;
   }
 
   // 5. 繪製節點點位
   pointsToDraw.forEach((pt, index) => {
+    if (!pt || pt.length < 2) return;
     const x = pt[0];
     const y = pt[1];
 
@@ -184,7 +328,7 @@ function drawCanvas() {
     ctx.fillStyle = pointColor;
     ctx.fill();
 
-    // 標記起點（紅色圖圈）和終點（藍色圈圈）
+    // 標記起點和終點
     const isStart = (pathStatus === 'completed' && pathIndices.length > 0) 
       ? (index === pathIndices[0])
       : (index === 0);
@@ -220,28 +364,60 @@ function drawCanvas() {
     ctx.textAlign = 'center';
     ctx.fillText(index + 1, x, y - 14);
   });
+
+  // 6. 繪製中途新增的臨時點位
+  if (simState === 'paused' && dynamicNewNodes.length > 0) {
+    dynamicNewNodes.forEach((node, idx) => {
+      if (!node || node.length < 2) return;
+      const nx = node[0];
+      const ny = node[1];
+      
+      // 紫色光暈
+      ctx.beginPath();
+      ctx.arc(nx, ny, 10, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(168, 85, 247, 0.25)';
+      ctx.fill();
+      
+      // 紫色核心
+      ctx.beginPath();
+      ctx.arc(nx, ny, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#a855f7';
+      ctx.fill();
+      
+      ctx.fillStyle = '#f3e8ff';
+      ctx.font = 'bold 8px Outfit';
+      ctx.textAlign = 'center';
+      ctx.fillText(`NEW`, nx, ny - 13);
+    });
+  }
 }
 
 // 處理畫布點擊事件：新增自訂點位
 function handleCanvasClick(e) {
-  if (currentSelectedTaskId) {
-    // 如果正在檢視任務，點擊畫布會切換回編輯模式並載入該任務的座標
-    const selectedTask = tasks.find(t => t.id === currentSelectedTaskId);
-    if (selectedTask) {
-      selectedPoints = [...selectedTask.coords];
-      selectedPointsCount.textContent = selectedPoints.length;
-    }
-    resetToEditMode();
-    return;
-  }
-
   const rect = canvas.getBoundingClientRect();
   
   // 將滑鼠座標縮放為畫布內部解析度
   const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
   const y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
 
-  // 不再限制點位數量上限（GA 演算法可處理大量節點）
+  if (currentSelectedTaskId) {
+    const selectedTask = tasks.find(t => t.id === currentSelectedTaskId);
+    if (selectedTask) {
+      if (selectedTask.status === 'completed' && simState === 'paused') {
+        // 在暫停模式下，點擊畫布以新增中途節點
+        dynamicNewNodes.push([x, y]);
+        btnSimReplan.disabled = false; // 啟用重新規劃按鈕
+        drawCanvas();
+        return;
+      }
+      
+      // 如果不是暫停模式，點擊畫布會載入選取點位並重設為編輯模式
+      selectedPoints = [...selectedTask.coords];
+      selectedPointsCount.textContent = selectedPoints.length;
+    }
+    resetToEditMode();
+    return;
+  }
 
   selectedPoints.push([x, y]);
   selectedPointsCount.textContent = selectedPoints.length;
@@ -324,8 +500,10 @@ function resetToEditMode() {
   currentSelectedTaskId = null;
   canvasModeBadge.textContent = '編輯模式';
   canvasModeBadge.parentNode.parentNode.classList.remove('viewing');
-  canvasOverlay.classList.add('hidden');
   
+  if (simulationPanel) simulationPanel.classList.add('hidden');
+  resetSimulation();
+
   const panel = document.getElementById('dp-player-panel');
   if (panel) panel.classList.add('hidden');
   
@@ -357,7 +535,6 @@ function fetchTasks() {
       if (currentSelectedTaskId) {
         const task = tasks.find(t => t.id === currentSelectedTaskId);
         if (task) {
-          updateCanvasOverlay(task);
           const panel = document.getElementById('dp-player-panel');
           if (task.status === 'completed' && panel && panel.classList.contains('hidden')) {
             setupComparisonPanel(task);
@@ -414,7 +591,7 @@ function renderTaskTable() {
 
     html += `
       <tr ${isSelected} onclick="selectTask('${task.id}')">
-        <td style="font-weight: 500; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${task.name}</td>
+        <td style="font-weight: 500; word-break: break-word;" title="${task.name}">${task.name}</td>
         <td style="font-family: monospace;">${task.coords.length}</td>
         <td>${workerDisplay}</td>
         <td>${statusBadge}</td>
@@ -437,36 +614,22 @@ function selectTask(taskId) {
   const task = tasks.find(t => t.id === taskId);
   if (task) {
     canvasModeBadge.textContent = `檢視模式: ${task.name}`;
-    updateCanvasOverlay(task);
     setupComparisonPanel(task);
+
+    // 顯示或隱藏模擬控制面板
+    if (simulationPanel) {
+      if (task.status === 'completed') {
+        simulationPanel.classList.remove('hidden');
+        resetSimulation(); // 切換任務時重設模擬狀態
+      } else {
+        simulationPanel.classList.add('hidden');
+      }
+    }
   }
   drawCanvas();
   renderTaskTable();
 }
 
-// 更新畫布覆蓋層的詳細資訊
-function updateCanvasOverlay(task) {
-  overlayTaskName.textContent = task.name;
-  canvasOverlay.classList.remove('hidden');
-
-  if (task.status === 'completed' && task.result) {
-    overlayDistance.textContent = `${task.result.distance} 公尺`;
-    overlayDistance.style.color = '#10b981';
-    overlayTime.textContent = formatTime(task.result.time);
-  } else if (task.status === 'running') {
-    overlayDistance.textContent = '計算中...';
-    overlayDistance.style.color = '#3b82f6';
-    overlayTime.textContent = '進行中';
-  } else if (task.status === 'queued') {
-    overlayDistance.textContent = '排隊中...';
-    overlayDistance.style.color = '#f59e0b';
-    overlayTime.textContent = '等待指派';
-  } else {
-    overlayDistance.textContent = '失敗';
-    overlayDistance.style.color = '#ef4444';
-    overlayTime.textContent = '無結果';
-  }
-}
 
 // 刪除或取消任務
 function deleteTask(event, taskId) {
@@ -735,6 +898,272 @@ function toggleWorkerContainer(workerId) {
   .finally(() => {
     transitioningWorkers.delete(workerId);
     fetchMonitor();
+  });
+}
+
+// --- 模擬配送與中途路徑重規劃邏輯 ---
+
+function handleSimToggle() {
+  const task = tasks.find(t => t.id === currentSelectedTaskId);
+  if (!task || task.status !== 'completed' || !task.result || !task.result.tour) return;
+
+  if (simState === 'idle' || simState === 'paused') {
+    simState = 'running';
+    if (btnSimToggle) {
+      btnSimToggle.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 模擬中...';
+      btnSimToggle.disabled = true; // 運行時禁用開始按鈕，只允許點暫停
+    }
+    if (btnSimPause) btnSimPause.disabled = false;
+    if (btnSimReset) btnSimReset.disabled = false;
+    if (btnSimReplan) btnSimReplan.disabled = true;
+    
+    canvasModeBadge.textContent = `模擬配送中: ${task.name}`;
+    
+    lastFrameTime = performance.now();
+    animationFrameId = requestAnimationFrame(updateSimulation);
+  }
+}
+
+function handleSimPause() {
+  if (simState === 'running') {
+    simState = 'paused';
+    cancelAnimationFrame(animationFrameId);
+    
+    if (btnSimToggle) {
+      btnSimToggle.innerHTML = '<i class="fa-solid fa-play"></i> 繼續模擬';
+      btnSimToggle.disabled = false;
+    }
+    if (btnSimPause) btnSimPause.disabled = true;
+    if (btnSimReset) btnSimReset.disabled = false;
+    
+    // 計算暫停時的精確插值座標
+    const task = tasks.find(t => t.id === currentSelectedTaskId);
+    if (task && task.result && task.result.tour) {
+      const tour = task.result.tour;
+      const coords = task.coords;
+      
+      // 計算段長度與累計距離
+      const segmentLengths = [];
+      const cumulativeDistances = [0];
+      for (let i = 0; i < tour.length - 1; i++) {
+        const pt1 = coords[tour[i]];
+        const pt2 = coords[tour[i+1]];
+        const len = (pt1 && pt2) ? Math.sqrt((pt2[0] - pt1[0])**2 + (pt2[1] - pt1[1])**2) : 0;
+        segmentLengths.push(len);
+        cumulativeDistances.push(cumulativeDistances[i] + len);
+      }
+      const totalDist = cumulativeDistances[cumulativeDistances.length - 1];
+
+      let currSegment = 0;
+      let t = 0.0;
+      
+      if (simProgress >= totalDist) {
+        currSegment = tour.length - 1;
+        t = 0.0;
+      } else {
+        for (let i = 0; i < segmentLengths.length; i++) {
+          if (simProgress >= cumulativeDistances[i] && simProgress < cumulativeDistances[i+1]) {
+            currSegment = i;
+            const segLen = segmentLengths[i];
+            t = segLen > 0 ? (simProgress - cumulativeDistances[i]) / segLen : 0;
+            break;
+          }
+        }
+      }
+      
+      if (currSegment >= tour.length - 1) {
+        const lastPt = coords[tour[tour.length - 1]];
+        pausedPosition = lastPt ? [...lastPt] : [0, 0];
+      } else {
+        const pt1 = coords[tour[currSegment]];
+        const pt2 = coords[tour[currSegment + 1]];
+        if (pt1 && pt2) {
+          pausedPosition = [
+            pt1[0] + (pt2[0] - pt1[0]) * t,
+            pt1[1] + (pt2[1] - pt1[1]) * t
+          ];
+        } else if (pt1) {
+          pausedPosition = [...pt1];
+        } else {
+          pausedPosition = [0, 0];
+        }
+      }
+    }
+    
+    canvasModeBadge.textContent = `模擬已暫停 (請點擊地圖新增剩餘路途欲經過的節點)`;
+    if (simStatusText) simStatusText.textContent = '模擬已暫停。您現在可以點擊地圖新增節點，然後點擊「重新規劃路徑」！';
+    
+    // 只有在新增了點位後才啟用重新規劃按鈕
+    if (btnSimReplan) btnSimReplan.disabled = dynamicNewNodes.length === 0;
+    
+    drawCanvas();
+  }
+}
+
+function handleSimReset() {
+  resetSimulation();
+}
+
+function resetSimulation() {
+  simState = 'idle';
+  simProgress = 0.0;
+  pausedPosition = null;
+  dynamicNewNodes = [];
+  if (animationFrameId) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
+  }
+  
+  if (btnSimToggle) {
+    btnSimToggle.innerHTML = '<i class="fa-solid fa-play"></i> 模擬配送';
+    btnSimToggle.disabled = false;
+  }
+  if (btnSimPause) btnSimPause.disabled = true;
+  if (btnSimReplan) {
+    btnSimReplan.disabled = true;
+    btnSimReplan.innerHTML = '<i class="fa-solid fa-route"></i> 重新規劃路徑';
+  }
+  if (simStatusText) simStatusText.textContent = '點擊「模擬配送」開始移動';
+  
+  const task = tasks.find(t => t.id === currentSelectedTaskId);
+  if (task) {
+    canvasModeBadge.textContent = `檢視模式: ${task.name}`;
+  }
+  
+  drawCanvas();
+}
+
+function updateSimulation(timestamp) {
+  if (simState !== 'running') return;
+  
+  const task = tasks.find(t => t.id === currentSelectedTaskId);
+  if (!task || !task.result || !task.result.tour) {
+    resetSimulation();
+    return;
+  }
+  
+  const tour = task.result.tour;
+  const coords = task.coords;
+  
+  // 計算總物理像素距離
+  let totalDist = 0;
+  for (let i = 0; i < tour.length - 1; i++) {
+    const pt1 = coords[tour[i]];
+    const pt2 = coords[tour[i+1]];
+    if (pt1 && pt2) {
+      totalDist += Math.sqrt((pt2[0] - pt1[0])**2 + (pt2[1] - pt1[1])**2);
+    }
+  }
+  
+  const elapsed = timestamp - lastFrameTime;
+  lastFrameTime = timestamp;
+  
+  // speed: 每秒前進 160 像素 (完全等速)
+  const speed = 160; 
+  simProgress += (elapsed / 1000) * speed;
+  
+  if (simProgress >= totalDist) {
+    simProgress = totalDist;
+    simState = 'idle';
+    if (btnSimToggle) {
+      btnSimToggle.innerHTML = '<i class="fa-solid fa-check"></i> 配送完成';
+      btnSimToggle.disabled = true;
+    }
+    if (btnSimPause) btnSimPause.disabled = true;
+    if (btnSimReplan) btnSimReplan.disabled = true;
+    if (simStatusText) simStatusText.textContent = '模擬配送完成！已順利到達目的地。';
+    drawCanvas();
+  } else {
+    const currentPercent = totalDist > 0 ? Math.round((simProgress / totalDist) * 100) : 100;
+    if (simStatusText) simStatusText.textContent = `配送中... 已完成 ${currentPercent}% 的路程`;
+    drawCanvas();
+    animationFrameId = requestAnimationFrame(updateSimulation);
+  }
+}
+
+function handleSimReplan() {
+  const task = tasks.find(t => t.id === currentSelectedTaskId);
+  if (!task || simState !== 'paused' || !pausedPosition) return;
+  
+  const tour = task.result.tour;
+  const coords = task.coords;
+  
+  // 1. 找出當前線段的起點與未走完的原路徑點位
+  // 計算累計距離與當前所屬段
+  const segmentLengths = [];
+  const cumulativeDistances = [0];
+  for (let i = 0; i < tour.length - 1; i++) {
+    const pt1 = coords[tour[i]];
+    const pt2 = coords[tour[i+1]];
+    const len = (pt1 && pt2) ? Math.sqrt((pt2[0] - pt1[0])**2 + (pt2[1] - pt1[1])**2) : 0;
+    segmentLengths.push(len);
+    cumulativeDistances.push(cumulativeDistances[i] + len);
+  }
+  const totalDist = cumulativeDistances[cumulativeDistances.length - 1];
+
+  let currSegment = 0;
+  if (simProgress >= totalDist) {
+    currSegment = tour.length - 1;
+  } else {
+    for (let i = 0; i < segmentLengths.length; i++) {
+      if (simProgress >= cumulativeDistances[i] && simProgress < cumulativeDistances[i+1]) {
+        currSegment = i;
+        break;
+      }
+    }
+  }
+
+  // 未走完的節點：從下一個節點 (currSegment + 1) 到倒數第二個節點 (tour.length - 2)
+  const remainingOriginalNodes = [];
+  for (let i = currSegment + 1; i < tour.length - 1; i++) {
+    const pt = coords[tour[i]];
+    if (pt) remainingOriginalNodes.push(pt);
+  }
+  
+  // 固定原終點：最後一個點
+  const fixedEndNode = coords[tour[tour.length - 1]];
+  
+  // 2. 組成新的坐標列表
+  // [0] = 暫停座標 (起點)
+  // [1..M] = 使用者新點 + 剩餘原點
+  // [M+1] = 固定原終點
+  const newCoords = [
+    pausedPosition,
+    ...dynamicNewNodes,
+    ...remainingOriginalNodes,
+    fixedEndNode
+  ];
+  
+  const newName = `${task.name} (重規劃)`;
+  
+  if (btnSimReplan) {
+    btnSimReplan.disabled = true;
+    btnSimReplan.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 規劃中...';
+  }
+  
+  fetch('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName, coords: newCoords })
+  })
+  .then(res => {
+    if (!res.ok) throw new Error('規劃任務提交失敗');
+    return res.json();
+  })
+  .then(newTask => {
+    // 重置模擬狀態
+    resetSimulation();
+    
+    // 選取新產生的任務以顯示在畫布上
+    currentSelectedTaskId = newTask.id;
+    fetchTasks();
+  })
+  .catch(err => {
+    alert('重新規劃路徑失敗：' + err.message);
+    if (btnSimReplan) {
+      btnSimReplan.disabled = false;
+      btnSimReplan.innerHTML = '<i class="fa-solid fa-route"></i> 重新規劃路徑';
+    }
   });
 }
 

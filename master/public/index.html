@@ -115,10 +115,26 @@
           </div>
           <div class="card-body canvas-container">
             <canvas id="tsp-canvas" width="600" height="400"></canvas>
-            <div id="canvas-overlay-details" class="canvas-overlay hidden">
-              <div class="overlay-title" id="overlay-task-name">-</div>
-              <div class="overlay-stat"><span class="lbl">路徑長度:</span> <span id="overlay-distance" class="val">-</span></div>
-              <div class="overlay-stat"><span class="lbl">運算耗時:</span> <span id="overlay-time" class="val">-</span></div>
+          </div>
+          <!-- Simulation Controls Panel -->
+          <div id="simulation-panel" class="simulation-panel hidden">
+            <div class="sim-controls-row">
+              <button id="btn-sim-toggle" class="btn btn-success btn-sim">
+                <i class="fa-solid fa-play"></i> 模擬配送
+              </button>
+              <button id="btn-sim-pause" class="btn btn-warning btn-sim" disabled>
+                <i class="fa-solid fa-pause"></i> 暫停
+              </button>
+              <button id="btn-sim-replan" class="btn btn-primary btn-sim" disabled>
+                <i class="fa-solid fa-route"></i> 重新規劃路徑
+              </button>
+              <button id="btn-sim-reset" class="btn btn-secondary btn-sim">
+                <i class="fa-solid fa-arrows-rotate"></i> 重設
+              </button>
+            </div>
+            <div class="sim-status-row">
+              <span class="sim-status-label">模擬狀態：</span>
+              <span id="sim-status-text" class="sim-status-text">點擊「模擬配送」開始移動</span>
             </div>
           </div>
           <!-- DP Player Control Panel -->
