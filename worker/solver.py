@@ -15,20 +15,14 @@ def solve_tsp(coords, first_step=None):
     start_time = time.time()
     n = len(coords)
     if n <= 1:
-        return {"tour": list(range(n)), "distance": 0.0, "time": 0, "dp_steps": []}
+        return {"tour": list(range(n)), "distance": 0.0, "time": 0}
     if n == 2:
         dist = distance(coords[0], coords[1])
         tour = [0, 1]
         return {
             "tour": tour, 
             "distance": round(dist, 2), 
-            "time": int((time.time() - start_time) * 1000),
-            "dp_steps": [{
-                "step": 1, 
-                "path": tour, 
-                "distance": round(dist, 2),
-                "table": []
-            }]
+            "time": int((time.time() - start_time) * 1000)
         }
 
     # 決定固定的前綴路徑 (Prefix) 與可變動的節點
@@ -56,13 +50,7 @@ def solve_tsp(coords, first_step=None):
         return {
             "tour": tour,
             "distance": round(best_dist, 2),
-            "time": max(1, duration_ms),
-            "dp_steps": [{
-                "step": 1,
-                "path": tour,
-                "distance": round(best_dist, 2),
-                "table": []
-            }]
+            "time": max(1, duration_ms)
         }
 
     # 基因演算法 (GA) 參數設定
@@ -81,7 +69,6 @@ def solve_tsp(coords, first_step=None):
 
     best_global_var = None
     best_global_dist = float('inf')
-    dp_steps = []
 
     # 演化迴圈 (開始繁衍下一代)
     for gen in range(1, generations + 1):
@@ -97,15 +84,6 @@ def solve_tsp(coords, first_step=None):
         if current_best_dist < best_global_dist:
             best_global_dist = current_best_dist
             best_global_var = list(current_best_var)
-
-        # 紀錄這一代找到的最佳路徑 (對應到 UI 播放功能的 dp_steps 格式)
-        best_full_path = [0] + fixed_prefix + best_global_var + [n - 1]
-        dp_steps.append({
-            "step": gen,
-            "path": best_full_path,
-            "distance": round(best_global_dist, 2),
-            "table": []
-        })
 
         # 選擇 (Selection)、交配 (Crossover) 與突變 (Mutation) 來產生下一代
         new_pop = [x[1] for x in scored_pop[:elites_count]]  # 保留菁英直接進入下一代
@@ -143,8 +121,7 @@ def solve_tsp(coords, first_step=None):
     return {
         "tour": tour,
         "distance": round(best_global_dist, 2),
-        "time": max(1, duration_ms),
-        "dp_steps": dp_steps
+        "time": max(1, duration_ms)
     }
 
 def solve_task_process(task_id, coords, master_url, worker_id, first_step=None):

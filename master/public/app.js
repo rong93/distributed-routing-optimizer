@@ -499,7 +499,6 @@ function handleSubmitTask() {
 function resetToEditMode() {
   currentSelectedTaskId = null;
   canvasModeBadge.textContent = '編輯模式';
-  canvasModeBadge.parentNode.parentNode.classList.remove('viewing');
   
   if (simulationPanel) simulationPanel.classList.add('hidden');
   resetSimulation();

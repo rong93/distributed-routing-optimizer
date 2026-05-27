@@ -629,6 +629,47 @@ def parse_top_metrics():
     except:
         return None, None
 
+def get_container_mem_percent():
+    try:
+        host_total_bytes = 0
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                for line in f:
+                    if line.startswith('MemTotal:'):
+                        host_total_bytes = int(line.split()[1]) * 1024
+                        break
+        except:
+            pass
+
+        if os.path.exists('/sys/fs/cgroup/memory.current'):
+            with open('/sys/fs/cgroup/memory.current', 'r') as f:
+                usage = int(f.read().strip())
+            limit = None
+            if os.path.exists('/sys/fs/cgroup/memory.max'):
+                with open('/sys/fs/cgroup/memory.max', 'r') as f:
+                    limit_str = f.read().strip()
+                    if limit_str != 'max':
+                        limit = int(limit_str)
+            if not limit or limit <= 0:
+                limit = host_total_bytes
+            if limit > 0:
+                return (usage / limit) * 100.0
+
+        elif os.path.exists('/sys/fs/cgroup/memory/memory.usage_in_bytes'):
+            with open('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'r') as f:
+                usage = int(f.read().strip())
+            limit = None
+            if os.path.exists('/sys/fs/cgroup/memory/memory.limit_in_bytes'):
+                with open('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'r') as f:
+                    limit = int(f.read().strip())
+            if not limit or limit <= 0 or limit > 9000000000000000000:
+                limit = host_total_bytes
+            if limit > 0:
+                return (usage / limit) * 100.0
+    except:
+        pass
+    return None
+
 def get_fallback_mem():
     """備用方案：當 top 指令無法取得記憶體資訊時，改從 /proc/meminfo 讀取。"""
     try:
@@ -673,16 +714,57 @@ def get_fallback_cpu():
     except:
         return 5.0
 
+prev_container_cpu_val = 0.0
+prev_container_cpu_time = 0.0
+
+def get_container_cpu_percent():
+    global prev_container_cpu_val, prev_container_cpu_time
+    try:
+        cpu_val = None
+        if os.path.exists('/sys/fs/cgroup/cpu.stat'):
+            with open('/sys/fs/cgroup/cpu.stat', 'r') as f:
+                for line in f:
+                    if line.startswith('usage_usec'):
+                        cpu_val = float(line.split()[1]) / 1000000.0
+                        break
+        elif os.path.exists('/sys/fs/cgroup/cpuacct/cpuacct.usage'):
+            with open('/sys/fs/cgroup/cpuacct/cpuacct.usage', 'r') as f:
+                cpu_val = float(f.read().strip()) / 1000000000.0
+
+        if cpu_val is not None:
+            now = time.time()
+            if prev_container_cpu_time > 0:
+                time_delta = now - prev_container_cpu_time
+                cpu_delta = cpu_val - prev_container_cpu_val
+                if time_delta > 0 and cpu_delta >= 0:
+                    cores = os.cpu_count() or 1
+                    pct = (cpu_delta / time_delta) * 100.0 / cores
+                    prev_container_cpu_val = cpu_val
+                    prev_container_cpu_time = now
+                    return min(100.0, max(0.0, pct))
+            prev_container_cpu_val = cpu_val
+            prev_container_cpu_time = now
+            return 0.0
+    except:
+        pass
+    return None
+
 def master_telemetry_loop():
     """Master 自身的遙測迴圈：每 3 秒收集一次 CPU 和記憶體使用率。"""
     print("[Master] Telemetry thread active.")
     while True:
         try:
-            cpu, mem = parse_top_metrics()
+            cpu = get_container_cpu_percent()
+            mem = get_container_mem_percent()
+
             if cpu is None:
-                cpu = get_fallback_cpu()
+                cpu, _ = parse_top_metrics()
+                if cpu is None:
+                    cpu = get_fallback_cpu()
             if mem is None:
-                mem = get_fallback_mem()
+                _, mem = parse_top_metrics()
+                if mem is None:
+                    mem = get_fallback_mem()
                 
             cpu = max(0.0, min(100.0, cpu))
             mem = max(0.0, min(100.0, mem))

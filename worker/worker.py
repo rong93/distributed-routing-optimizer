@@ -1,9 +1,7 @@
 import os
 import sys
 import time
-import re
 import threading
-import subprocess
 import requests
 from flask import Flask, request, jsonify
 import multiprocessing
@@ -92,32 +90,47 @@ def cancel():
     
     return jsonify({"message": "Task not running on this worker"})
 
-def parse_top_metrics():
-    """透過 top 指令解析目前的 CPU 和記憶體使用率。"""
+
+def get_container_mem_percent():
     try:
-        result = subprocess.run(['top', '-bn', '1', '-i', '-c'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2)
-        stdout = result.stdout
-        
-        cpu_usage = None
-        mem_usage = None
+        host_total_bytes = 0
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                for line in f:
+                    if line.startswith('MemTotal:'):
+                        host_total_bytes = int(line.split()[1]) * 1024
+                        break
+        except:
+            pass
 
-        # 解析 CPU 使用率（從閒置率反推）
-        idle_match = re.search(r'([\d.,]+)\s+id', stdout)
-        if idle_match:
-            idle = float(idle_match.group(1).replace(',', '.'))
-            cpu_usage = 100.0 - idle
-            
-        # 解析記憶體使用率
-        mem_match = re.search(r'(?:Mem|MiB Mem|KiB Mem)\s*:\s*([\d.,]+)\s+total,\s*([\d.,]+)\s+free,\s*([\d.,]+)\s+used', stdout, re.IGNORECASE)
-        if mem_match:
-            total = float(mem_match.group(1).replace(',', '.'))
-            used = float(mem_match.group(3).replace(',', '.'))
-            if total > 0:
-                mem_usage = (used / total) * 100.0
+        if os.path.exists('/sys/fs/cgroup/memory.current'):
+            with open('/sys/fs/cgroup/memory.current', 'r') as f:
+                usage = int(f.read().strip())
+            limit = None
+            if os.path.exists('/sys/fs/cgroup/memory.max'):
+                with open('/sys/fs/cgroup/memory.max', 'r') as f:
+                    limit_str = f.read().strip()
+                    if limit_str != 'max':
+                        limit = int(limit_str)
+            if not limit or limit <= 0:
+                limit = host_total_bytes
+            if limit > 0:
+                return (usage / limit) * 100.0
 
-        return cpu_usage, mem_usage
+        elif os.path.exists('/sys/fs/cgroup/memory/memory.usage_in_bytes'):
+            with open('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'r') as f:
+                usage = int(f.read().strip())
+            limit = None
+            if os.path.exists('/sys/fs/cgroup/memory/memory.limit_in_bytes'):
+                with open('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'r') as f:
+                    limit = int(f.read().strip())
+            if not limit or limit <= 0 or limit > 9000000000000000000:
+                limit = host_total_bytes
+            if limit > 0:
+                return (usage / limit) * 100.0
     except:
-        return None, None
+        pass
+    return None
 
 def get_fallback_mem():
     """備用方案：當 top 指令無法取得記憶體資訊時，改從 /proc/meminfo 讀取。"""
@@ -163,14 +176,54 @@ def get_fallback_cpu():
     except:
         return 5.0
 
+prev_container_cpu_val = 0.0
+prev_container_cpu_time = 0.0
+
+def get_container_cpu_percent():
+    global prev_container_cpu_val, prev_container_cpu_time
+    try:
+        cpu_val = None
+        if os.path.exists('/sys/fs/cgroup/cpu.stat'):
+            with open('/sys/fs/cgroup/cpu.stat', 'r') as f:
+                for line in f:
+                    if line.startswith('usage_usec'):
+                        cpu_val = float(line.split()[1]) / 1000000.0
+                        break
+        elif os.path.exists('/sys/fs/cgroup/cpuacct/cpuacct.usage'):
+            with open('/sys/fs/cgroup/cpuacct/cpuacct.usage', 'r') as f:
+                cpu_val = float(f.read().strip()) / 1000000000.0
+
+        if cpu_val is not None:
+            now = time.time()
+            if prev_container_cpu_time > 0:
+                time_delta = now - prev_container_cpu_time
+                cpu_delta = cpu_val - prev_container_cpu_val
+                if time_delta > 0 and cpu_delta >= 0:
+                    cores = os.cpu_count() or 1
+                    pct = (cpu_delta / time_delta) * 100.0 / cores
+                    prev_container_cpu_val = cpu_val
+                    prev_container_cpu_time = now
+                    return min(100.0, max(0.0, pct))
+            prev_container_cpu_val = cpu_val
+            prev_container_cpu_time = now
+            return 0.0
+    except:
+        pass
+    return None
+
 def telemetry_thread_loop():
     """定期向 Master 回報系統資源使用狀況（CPU、記憶體）。
-    直接從 /proc/stat 和 /proc/meminfo 讀取，避免 top 指令在高負載下搶占 CPU。"""
+    優先讀取 cgroups，若讀取失敗則備用讀取主機資訊。"""
     print(f"[{WORKER_ID}] Telemetry thread active.")
     while True:
         try:
-            cpu = get_fallback_cpu()
-            mem = get_fallback_mem()
+            cpu = get_container_cpu_percent()
+            mem = get_container_mem_percent()
+
+            if cpu is None:
+                cpu = get_fallback_cpu()
+            if mem is None:
+                mem = get_fallback_mem()
             
             # 將數值限制在 0~100 的合理範圍內
             cpu = max(0.0, min(100.0, cpu))
